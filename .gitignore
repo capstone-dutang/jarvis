@@ -1,19 +1,35 @@
-# IDE
-.idea/
+# 환경변수
+.env
+backend/.env
+frontend/.env
 
 # Python
 __pycache__/
-*.py[cod]
-*.egg-info/
-dist/
-build/
+*.pyc
+*.pyo
 .venv/
 venv/
+*.egg-info/
+
+# Node
+node_modules/
+frontend/node_modules/
+dist/
+
+# Docker 볼륨 관련
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
 
 # OS
 .DS_Store
 Thumbs.db
 
-# Environment
-.env
-.env.local
+# 프로젝트 제외 항목
+docs/
+memory/
+CLAUDE.md
+pencil-new.pen
