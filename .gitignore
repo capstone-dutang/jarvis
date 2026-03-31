@@ -29,7 +29,6 @@ dist/
 Thumbs.db
 
 # 프로젝트 제외 항목
-docs/
 memory/
 CLAUDE.md
 pencil-new.pen
