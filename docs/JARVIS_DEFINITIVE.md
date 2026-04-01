@@ -567,7 +567,7 @@ MCP 스펙(2025-03-26 이후)이 요구하는 인증 표준. ChatGPT, Claude.ai,
 | 그래프 탐색 | PostgreSQL Recursive CTE | BFS 2~3홉, 1~20ms (10K~100K 노드) |
 | CLI | typer 또는 click | API thin client |
 | Web UI | React + React Flow | 기억 그래프 시각화 |
-| 인프라 | Oracle Cloud Always Free | ARM 4 OCPU, 24GB RAM |
+| 인프라 | GCP (90일 무료 크레딧 $300+) | Cloud Run + Cloud SQL 또는 GCE |
 
 ### 외부 API 의존: 없음
 
@@ -579,27 +579,25 @@ MCP 스펙(2025-03-26 이후)이 요구하는 인증 표준. ChatGPT, Claude.ai,
 
 ## 12. 인프라
 
-### Oracle Cloud Always Free
+### GCP (90일 무료 크레딧)
 
-| 항목 | 스펙 |
-|------|------|
-| CPU | 4 OCPU (ARM Ampere A1) |
-| RAM | 24GB |
-| 스토리지 | 200GB block volume |
-| 네트워크 | 10TB/월 아웃바운드 |
-| 비용 | $0 (Always Free) |
+팀원 계정의 GCP 90일 무료 크레딧($300+, 약 42만원)을 활용.
 
-이 스펙이면:
-- PostgreSQL + pgvector HNSW 인덱스 사용 가능
-- FastAPI + PostgreSQL + 임베딩 모델(ONNX int8, ~400MB) 같은 VM에서 여유롭게 동작 (전체 ~7.6GB / 24GB 사용, 16GB 여유)
-- 벡터 50만 개 이상 수용 가능
-- `shared_buffers=6GB, effective_cache_size=18GB, work_mem=256MB`
+| 구성 | 용도 | 비고 |
+|------|------|------|
+| Cloud Run | FastAPI + MCP 서버 + 임베딩 모델 | scale-to-zero, 메모리 최대 32GB 설정 가능 |
+| Cloud SQL (PostgreSQL 16) | pgvector + PGroonga | 관리형 DB, 자동 백업 |
+| 또는 GCE e2-medium+ | 전부 한 VM에서 | 더 단순, Docker Compose로 운영 |
+
+크레딧 기간(90일) 내에 캡스톤 시연 완료 가능. 이후 서비스화 시 인프라 재검토.
+
+임베딩 모델(ONNX int8, ~400MB)은 Cloud Run 또는 GCE에서 로컬 실행.
+외부 API 의존 없음 — 서버에 전부 포함.
 
 ### 캡스톤 시연
 
 - 개발: 로컬 PostgreSQL + Docker Compose
-- 시연: Oracle Cloud VM에 배포 또는 로컬 + ngrok 터널링
-- 외부 API 의존 없음 — 서버 하나에 전부 포함
+- 시연: GCP 배포 (실제 HTTPS URL) 또는 로컬 + ngrok 터널링
 
 ---
 
