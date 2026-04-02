@@ -1,0 +1,27 @@
+# Custom PostgreSQL 16 with pgvector + PGroonga
+# Based on: research/2026-04-01-arm64-deployment-research.md lines 23-39
+
+FROM pgvector/pgvector:pg16
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential cmake wget pkg-config \
+    libmsgpack-dev libmecab-dev zlib1g-dev liblz4-dev libzstd-dev \
+    postgresql-server-dev-16 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Build Groonga from source (follows GitHub redirect)
+RUN cd /tmp \
+    && wget --no-check-certificate -q -O groonga-14.1.2.tar.gz \
+       https://github.com/groonga/groonga/releases/download/v14.1.2/groonga-14.1.2.tar.gz \
+    && tar xzf groonga-14.1.2.tar.gz && cd groonga-14.1.2 \
+    && cmake -S . -B build -DCMAKE_INSTALL_PREFIX=/usr/local \
+       -DCMAKE_BUILD_TYPE=Release -DGRN_WITH_MRUBY=OFF \
+    && cmake --build build --parallel $(nproc) \
+    && cmake --install build && ldconfig && rm -rf /tmp/groonga*
+
+# Build PGroonga from source
+RUN cd /tmp \
+    && wget --no-check-certificate -q -O pgroonga-3.2.5.tar.gz \
+       https://github.com/pgroonga/pgroonga/releases/download/3.2.5/pgroonga-3.2.5.tar.gz \
+    && tar xzf pgroonga-3.2.5.tar.gz && cd pgroonga-3.2.5 \
+    && make HAVE_MSGPACK=1 && make install && rm -rf /tmp/pgroonga*

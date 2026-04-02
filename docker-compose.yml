@@ -1,0 +1,36 @@
+services:
+  db:
+    build:
+      context: .
+      dockerfile: Dockerfile.db
+    environment:
+      POSTGRES_DB: jarvis
+      POSTGRES_USER: jarvis
+      POSTGRES_PASSWORD: jarvis
+    ports:
+      - "5440:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/01-init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jarvis"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  server:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      JARVIS_DATABASE_URL: "postgresql+asyncpg://jarvis:jarvis@db:5432/jarvis"
+      JARVIS_OAUTH_ISSUER: "http://localhost:8000"
+      JARVIS_OAUTH_SECRET_KEY: "dev-secret-change-in-production"
+    depends_on:
+      db:
+        condition: service_healthy
+    command: >
+      sh -c "cd /app && PYTHONPATH=/app/src alembic upgrade head && PYTHONPATH=/app/src uvicorn jarvis.main:app --host 0.0.0.0 --port 8000"
+
+volumes:
+  pgdata:
