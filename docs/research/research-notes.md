@@ -405,17 +405,38 @@ API 기한이 없다는 걸 확인한 후, 시딩 우선순위를 재조정. Pha
 
 #### 세션 1 종합 — 이 세션에서 일어난 일
 
+**설계 + 리서치:**
 1. 절대문서에 04-14 리서치 8건 반영
 2. 자비스 방향성 논의 (외장 뇌 비전, 토픽 군집, 일일 퀘스트)
 3. 보완 파이프라인 설계 ("서버 LLM 0" → "비용 최소화")
 4. Transcript 분석 (91세션, 4.3MB 유효, $2-5)
 5. 딥리서치 프롬프트 5건 작성 + 7건 결과 수신
 6. 리서치 종합 분석 (독립추출>순차, 전처리>청킹, source_quote 검증이 최고 ROI)
-7. 절대문서에 리서치 7건 종합 반영 (보완 파이프라인, 추출 파이프라인, NLI 결정 트리, refinement)
-8. 전처리 스크립트 구현 + 90세션 처리 완료
-9. git commit + push (brain + jarvis submodule)
+7. 절대문서에 리서치 7건 종합 반영
 
-**다음 할 일**: Phase 1 마무리 (PGroonga FTS 연동, OAuth 활성화) → Phase 2 (NLI, 보완 파이프라인) → Transcript 시딩 (추출 스크립트)
+**구현:**
+8. 전처리 스크립트 구현 + 90세션 처리 완료 (807MB → 68MB, 11.8x)
+9. Phase 1 마무리: PGroonga 인덱스 3개 + hybrid_graph_search() SQL 함수 마이그레이션
+10. Phase 1 마무리: Fragment 테이블 + 이중 저장 로직 (store_fact → KnowledgeFact + Fragment 동시 생성)
+11. Phase 2: 그래프 검색 활성화 (recall.py seed_ids 전달 — 기존 하드코딩 [] 수정)
+12. Phase 2: NLI 모순 감지 (nli_detection.py 신규 + store.py 연동) — 실제 contradiction 0.99 감지 검증
+13. Phase 2: 갭 감지 4단계 LLM-free 파이프라인 (gap_detection.py)
+14. Phase 2: 갭 추출 Anthropic API (gap_extraction.py)
+15. Phase 2: 정규화 테스트 13/13 통과
+16. Phase 2: 세션 요약 자동 생성 (_auto_summarize)
+
+**감사 + 수정:**
+17. 절대문서 vs 코드 전수 감사 (3개 에이전트 병렬) — critical 이슈 4개, high 5개, medium 4개 발견
+18. EntityRelation 생성 로직 추가 (store.py + schemas.py에 RelationHint) — 감사에서 발견된 가장 큰 구멍
+19. MCP 도구 jarvis_ 접두사 추가 (4개 도구 전부)
+20. EntityRelation 실제 DB 생성 검증 (JARVIS depends_on PostgreSQL, pgvector part_of PostgreSQL)
+
+**시딩 준비 최종 검수:**
+21. 전처리 90세션 ✅, Prompt A ✅, store_memory API ✅, quote 검증 ✅
+22. 빠진 것: extract_knowledge.py (추출 스크립트), ANTHROPIC_API_KEY 환경변수
+23. 비용 재확인: 에이전트가 $134로 과대 추정 → 실측 기반 $2-5가 정확
+
+**다음 할 일**: extract_knowledge.py 작성 → ANTHROPIC_API_KEY 설정 → 파일럿 3세션 추출 → 전체 배치
 
 ---
 
