@@ -438,6 +438,67 @@ API 기한이 없다는 걸 확인한 후, 시딩 우선순위를 재조정. Pha
 
 **다음 할 일**: extract_knowledge.py 작성 → ANTHROPIC_API_KEY 설정 → 파일럿 3세션 추출 → 전체 배치
 
+### 세션 2: Extra Usage 과금 조사 + extract_knowledge.py 구현
+
+#### Extra Usage 과금 메커니즘 조사
+
+시딩용 추출 스크립트에서 Claude API를 호출해야 하는데, `anthropic` Python SDK는 API 크레딧(별도 충전)이 필요함. 사용자에게 Max 구독의 Extra Usage 크레딧($200)이 있어서 이것으로 대체할 수 있는지 조사.
+
+**배경**: 2026-04-04 Anthropic이 서드파티 도구(OpenClaw 등)의 구독 사용을 차단. 보상으로 1개월 구독금액 = Extra Usage 크레딧 지급. Boris Cherny(Anthropic) 공식 발언: "You can still use these tools with your Claude login via extra usage bundles."
+
+**조사 결과**:
+- Extra Usage ≠ API 크레딧 — 별도 과금 시스템이지만 가격은 동일 (standard API rates)
+- `anthropic` Python SDK는 API 키(`sk-ant-api03-*`) 전용 → Extra Usage 사용 불가
+- OAuth 토큰을 SDK에 넣는 것은 토큰 탈취로 밴 사유
+- **해법**: `claude -p` (CLI 파이프 모드)로 subprocess 호출 → CLI가 OAuth 인증 처리 → Extra Usage에서 차감
+- OpenClaw도 동일 방식 사용 — `claude` CLI를 백엔드로 호출, Anthropic이 이 사용법을 공식 허용
+
+**근거 출처**:
+- Claude Code 공식 문서: `claude -p` (pipe mode), `--output-format json`, `--json-schema`, `--tools ""`, `--no-session-persistence`
+- OpenClaw OAuth 문서: "Anthropic staff told us this usage is allowed again"
+- OpenClaw→CLI 마이그레이션 가이드: "Anthropic changed billing so third-party API apps draw from 'extra usage' credits, not plan limits"
+
+**크레딧 기한**: 수령 기한 4월 17일, 사용 기한은 수령 후 90일 (7월 중순). 이미 수령 완료.
+
+**서드파티 정의**: Anthropic이 만들지 않은 모든 프로그램 = 서드파티. 우리 `extract_knowledge.py`도 서드파티. `claude` CLI를 백엔드로 사용하는 외부 프로그램이라는 점에서 OpenClaw과 동일.
+
+#### extract_knowledge.py 구현
+
+플랜모드로 설계 후 구현.
+
+**호출 방식**:
+```bash
+claude -p --output-format json --model sonnet --tools "" \
+  --no-session-persistence --system-prompt "짧은 한 줄" \
+  --json-schema '<스키마>' --max-budget-usd 0.50
+```
+- stdin으로 Prompt A 전체 본문 + 트랜스크립트 전달
+- `--tools ""`: 도구 비활성화 (순수 텍스트 완성만)
+- `--json-schema`: 서버사이드 구조화 출력 검증 → `structured_output` 필드로 반환
+
+**핵심 기능**:
+1. 순차 처리 (시간순) — canonical entity list가 누적되어야 entity 일관성 확보
+2. Entity 누적 — `dict[str, str]` 메모리 유지, 후속 세션 프롬프트에 반영
+3. Source quote 검증 — 추출 후 `source_quote in flat_text` 확인, grounding rate 계산
+4. 대형 세션 청크 분할 — flat_text > 500K 문자 시 "User: " 경계에서 분할
+5. Resume 지원 — 이미 추출된 세션 자동 스킵
+6. 파일럿 모드 — `--pilot 3`으로 소량 테스트 가능
+7. dry-run — 실제 호출 없이 처리 대상 확인
+
+**검증**: ruff 통과, mypy --strict 통과, --dry-run 정상 동작 (90세션 로드, 시간순 정렬, 소형 세션 1개 자동 스킵)
+
+**파일**: `knowledge-extraction/scripts/extract_knowledge.py`
+
+**다음 할 일**: `--pilot 3`으로 실제 추출 테스트 → 품질 확인 → 전체 배치
+
+#### 사용자 수정/지적 기록
+
+- AI 에이전트에 조사 위임 후 검증 없이 전달 → hallucination 섞인 정보가 계속 영향. 직접 검색+공식 문서 확인이 필수
+- "밴당하면 50만원 손해" — OAuth 토큰 추출 테스트 제안은 위험한 제안이었음
+- "오픈클로는 오픈소스인데 코드를 보면 되잖아" — 추측 대신 실제 구현 확인이 정답
+- "왜 자꾸 Batch API를 대안으로 넣느냐" — 이미 결정된 사항을 반복 제시하지 말 것
+- "Claude Code에서 기본사용량 차감이 확실한데 왜 Extra Usage라고 하냐" — CLI 일반 사용은 기본 사용량, 서드파티 사용분만 Extra Usage
+
 ---
 
 ## 아이디어 인덱스
@@ -469,6 +530,9 @@ API 기한이 없다는 걸 확인한 후, 시딩 우선순위를 재조정. Pha
 | 23 | source_quote 사후 검증이 프롬프트 최적화보다 ROI 높음 | 04-15 | Mem0 97.8% 쓰레기가 검증 없이 발생. 3중 보장: 프롬프트+사후검증+거부 |
 | 24 | refinement ≠ contradiction — refines edge로 별도 처리 | 04-15 | "MCP 서버"→"MCP+HTTP"→"4도구"는 모순 아닌 점진적 구체화 |
 | 25 | 대형 세션 자동 분할 (3000턴, user 경계) | 04-15 | git 업로드 + 추출 윈도우 동시 해결. 토픽 분할은 LLM 필요해 전처리에서 과함 |
+| 26 | `claude -p` CLI 파이프 모드로 Extra Usage 과금 활용 | 04-15 | anthropic SDK 불가 → CLI subprocess 호출로 우회. OpenClaw과 동일 방식. 밴 위험 0 |
+| 27 | `--json-schema`로 구조화 출력 보장 | 04-15 | 서버사이드 constrained decoding. `structured_output` 필드로 파싱된 JSON 직접 반환 |
+| 28 | canonical entity list 누적으로 세션 간 일관성 | 04-15 | 순차 처리 시 이전 세션의 entity를 프롬프트에 포함. 독립 추출이지만 entity naming은 일관 |
 
 ## 실패/수정 기록
 
@@ -484,3 +548,6 @@ API 기한이 없다는 걸 확인한 후, 시딩 우선순위를 재조정. Pha
 | "Memento SKILL.md 1000줄" | 실제로 존재하지 않음 | scrypster/memento ~30줄 CLAUDE.md가 전부 |
 | "서버 LLM 비용 0"이 절대 원칙 | unknown unknowns로 20% 누락 가능 | "비용 최소화"로 전환 — 미처리 구간만 서버 LLM 보완 |
 | "어시스턴트 레이어 별도 필요" 분석 | AI 클라이언트가 이미 그 역할 | recall 결과 종합/제안 = 기존 AI 기능. 메타적 시야 부족이었음 |
+| AI 에이전트에 과금 조사 위임 | hallucination 섞인 정보 반복, "OAuth 2월에 차단됨" 등 허위 정보 | 직접 공식 문서 확인 + 오픈소스 코드 확인이 정답. 에이전트 결과 무조건 검증 필수 |
+| "claude -p는 기본 사용량에서 차감" 반복 주장 | 서드파티 사용분은 Extra Usage에서 차감 (마이그레이션 가이드 명시) | OpenClaw 오픈소스 코드 + 공식 발언으로 확인 |
+| OAuth 토큰 추출해서 SDK 테스트 제안 | 토큰 탈취 행위 = 밴 사유 | 절대 하면 안 됨. CLI 정상 사용이 유일한 안전 경로 |
