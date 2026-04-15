@@ -15,6 +15,8 @@ from jarvis.models.tables import (
     Entity,
     EntityType,
     Episode,
+    Fragment,
+    FragmentType,
     KnowledgeFact,
     Session,
     TrustLevel,
@@ -250,6 +252,22 @@ async def _resolve_predicate(
     return predicate
 
 
+def _classify_fragment_type(predicate: str) -> FragmentType:
+    """Classify fragment type from predicate text."""
+    pred_lower = predicate.lower()
+    if any(kw in pred_lower for kw in ("prefer", "선호", "like", "dislike", "좋아", "싫어", "sentiment")):
+        return FragmentType.preference
+    if any(kw in pred_lower for kw in ("decide", "chose", "결정", "선택", "switch", "change")):
+        return FragmentType.decision
+    if any(kw in pred_lower for kw in ("error", "bug", "fail", "에러", "버그", "실패")):
+        return FragmentType.error
+    if any(kw in pred_lower for kw in ("step", "process", "how_to", "방법", "절차", "procedure")):
+        return FragmentType.procedure
+    if any(kw in pred_lower for kw in ("relates", "depends", "uses", "관계", "의존", "사용")):
+        return FragmentType.relation
+    return FragmentType.fact
+
+
 async def store_fact(
     db: AsyncSession,
     workspace_id: uuid.UUID,
@@ -293,6 +311,22 @@ async def store_fact(
     )
     db.add(new_fact)
     await db.flush()
+
+    # Create Fragment (dual store: KnowledgeFact + Fragment)
+    fragment_content = f"{entity.name} {resolved_predicate} {fact_hint.object}"
+    if len(fragment_content) > 500:
+        fragment_content = fragment_content[:497] + "..."
+
+    fragment = Fragment(
+        workspace_id=workspace_id,
+        content=fragment_content,
+        fragment_type=_classify_fragment_type(resolved_predicate),
+        keywords=[entity.name, resolved_predicate],
+        importance=0.7 if trust == TrustLevel.grounded else 0.4,
+        source_episode_id=episode.id,
+        source_fact_id=new_fact.id,
+    )
+    db.add(fragment)
 
     return StoredFactResponse(
         fact_id=new_fact.id,

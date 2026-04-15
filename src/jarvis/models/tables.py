@@ -59,6 +59,15 @@ class TrustLevel(enum.StrEnum):
     low_trust = "low_trust"
 
 
+class FragmentType(enum.StrEnum):
+    fact = "fact"
+    decision = "decision"
+    error = "error"
+    preference = "preference"
+    procedure = "procedure"
+    relation = "relation"
+
+
 # ── Users & Workspaces ──
 
 
@@ -224,6 +233,31 @@ class ArtifactLink(Base):
     fact_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("knowledge_facts.id", ondelete="CASCADE"), nullable=True)
     artifact_type: Mapped[str] = mapped_column(String(50), nullable=False)  # file, commit, url
     artifact_uri: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Fragment(Base):
+    """Natural language text fragment (≤300 chars) for semantic search.
+
+    Every new memory is stored as BOTH KnowledgeFact (structured query)
+    AND Fragment (semantic search). This dual-store design ensures both
+    exact predicate queries and fuzzy semantic recall work.
+    """
+
+    __tablename__ = "fragments"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False)
+    content: Mapped[str] = mapped_column(String(500), nullable=False)  # ≤300 target, 500 hard limit
+    fragment_type: Mapped[FragmentType] = mapped_column(Enum(FragmentType), nullable=False, default=FragmentType.fact)
+    keywords: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    importance: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
+    source_episode_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("episodes.id", ondelete="CASCADE"), nullable=False
+    )
+    source_fact_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("knowledge_facts.id", ondelete="SET NULL"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
