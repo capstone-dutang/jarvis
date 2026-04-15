@@ -114,6 +114,7 @@ async def resolve_entity(
     )
     existing = result.scalar_one_or_none()
     if existing:
+        logger.info("Entity exact match: '%s' → existing id=%s", hint.name, existing.id)
         return existing, False
 
     # Stage 2: Embedding candidate retrieval via pgvector
@@ -163,7 +164,11 @@ async def resolve_entity(
 
     # Threshold decisions
     if best_match and best_score >= 0.92:
+        logger.info("Entity resolved: '%s' → '%s' (score=%.3f)", hint.name, best_match.name, best_score)
         return best_match, False
+
+    if best_match and best_score >= 0.85:
+        logger.info("Entity resolved (mid-tier): '%s' → '%s' (score=%.3f)", hint.name, best_match.name, best_score)
 
     # Create new entity
     try:
@@ -179,6 +184,7 @@ async def resolve_entity(
     )
     db.add(entity)
     await db.flush()
+    logger.info("Entity created: '%s' (type=%s)", hint.name, entity_type.value)
     return entity, True
 
 
@@ -384,6 +390,7 @@ async def store_fact(
     # Check source_quote grounding
     is_grounded = verify_quote(fact_hint.source_quote, transcript)
     trust = TrustLevel.grounded if is_grounded else TrustLevel.low_trust
+    logger.info("Quote grounding: %s %s → %s", entity.name, fact_hint.predicate, trust.value)
 
     # Resolve predicate: "나이" and "age" → same predicate if semantically similar
     resolved_predicate = await _resolve_predicate(db, entity.id, fact_hint.predicate)
@@ -403,6 +410,11 @@ async def store_fact(
         existing.superseded_at = func.now()
         existing.valid_to = func.now()
         is_supersede = True
+        logger.info(
+            "Fact superseded: %s %s '%s' → '%s'",
+            entity.name, resolved_predicate,
+            existing.object_value[:60], fact_hint.object[:60],
+        )
 
     new_fact = KnowledgeFact(
         workspace_id=workspace_id,

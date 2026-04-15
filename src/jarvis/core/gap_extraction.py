@@ -1,23 +1,27 @@
-"""Server-side gap extraction using Claude API.
+"""Server-side gap extraction using Claude CLI pipe mode.
 
 When gap_detection.py identifies uncovered turns, this module extracts
-knowledge from those gaps using the Anthropic API.
+knowledge from those gaps using `claude -p` subprocess.
 
-Two-step process (from research #4):
-1. Haiku extracts facts from gap turns (blind, no existing facts context)
-2. Sonnet reconciles against existing facts (ADD/UPDATE/NOOP)
-
-Cost: ~$0.01-0.02 per session via Batch API.
+Two-step process:
+1. Extract facts from gap turns (blind, no existing facts context)
+2. Reconcile against existing facts (ADD/UPDATE/NOOP)
 """
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import logging
-import os
+import platform
+import subprocess
 from dataclasses import dataclass
+from typing import Any
 
 logger = logging.getLogger(__name__)
+
+CLAUDE_CMD = "claude.cmd" if platform.system() == "Windows" else "claude"
 
 
 @dataclass
@@ -28,7 +32,6 @@ class ExtractedFact:
     predicate: str
     object_value: str
     source_quote: str
-    confidence: str  # "high" | "medium" | "low"
 
 
 @dataclass
@@ -37,11 +40,10 @@ class ReconciliationAction:
 
     fact: ExtractedFact
     action: str  # "ADD" | "UPDATE" | "NOOP"
-    target_fact_id: str | None  # ID of existing fact to update (if UPDATE)
     reasoning: str
 
 
-EXTRACTION_PROMPT = """You are a knowledge extraction system. Extract all factual knowledge from the conversation segment below.
+EXTRACTION_PROMPT = """Extract all factual knowledge from the conversation segment below.
 
 Focus on:
 1. Personal preferences (likes, dislikes, choices made)
@@ -51,7 +53,6 @@ Focus on:
 5. Temporal facts (deadlines, schedules, durations)
 6. Relationships between entities
 7. Implicit preferences revealed through behavior
-8. Constraints and requirements mentioned in passing
 
 <CONVERSATION>
 {context_before}
@@ -61,13 +62,13 @@ Focus on:
 {context_after}
 </CONVERSATION>
 
-Extract facts as atomic statements. Each fact should be self-contained (no pronouns — resolve all references using context).
+Extract facts as atomic statements. Each fact should be self-contained.
 Include a source_quote that is an EXACT verbatim substring from the GAP section.
 
-Return JSON: {{"facts": [{{"subject": "entity name", "predicate": "snake_case_verb", "object": "value", "source_quote": "exact quote from gap", "confidence": "high|medium|low"}}]}}
+Return JSON: {{"facts": [{{"subject": "entity name", "predicate": "snake_case_verb", "object": "value", "source_quote": "exact quote from gap"}}]}}
 Only return JSON, no explanation."""
 
-RECONCILIATION_PROMPT = """You are a memory deduplication system. Compare newly extracted facts against existing memories and decide what action to take for each.
+RECONCILIATION_PROMPT = """Compare newly extracted facts against existing memories and decide what action to take.
 
 <EXISTING_MEMORIES>
 {existing_facts}
@@ -79,122 +80,156 @@ RECONCILIATION_PROMPT = """You are a memory deduplication system. Compare newly 
 
 For each new fact, return exactly one action:
 - ADD: genuinely new information absent from existing memories
-- UPDATE: corrects, refines, or supersedes an existing memory (specify which memory ID)
-- NOOP: already captured in existing memories (specify which memory ID)
+- UPDATE: corrects, refines, or supersedes an existing memory
+- NOOP: already captured in existing memories
 
 Err on the side of ADD for ambiguous cases.
 
-Return JSON: {{"actions": [{{"fact_index": 0, "action": "ADD|UPDATE|NOOP", "target_memory_id": null|"id", "reasoning": "brief explanation"}}]}}
+Return JSON: {{"actions": [{{"fact_index": 0, "action": "ADD|UPDATE|NOOP", "reasoning": "brief explanation"}}]}}
 Only return JSON, no explanation."""
 
 
-def _get_client():  # type: ignore[no-untyped-def]
-    """Get Anthropic client. Returns None if API key not set."""
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        logger.warning("ANTHROPIC_API_KEY not set. Gap extraction disabled.")
-        return None
+def _call_claude(prompt: str, timeout: int = 120) -> str | None:
+    """Call claude -p and return the result text."""
+    cmd = [
+        CLAUDE_CMD,
+        "-p",
+        "--output-format", "json",
+        "--model", "sonnet",
+        "--tools", "",
+        "--no-session-persistence",
+        "--system-prompt", "You are a precise knowledge extraction system. Output only valid JSON.",
+    ]
+
     try:
-        import anthropic
-
-        return anthropic.Anthropic(api_key=api_key)
-    except ImportError:
-        logger.warning("anthropic package not installed. Gap extraction disabled.")
+        result = subprocess.run(
+            cmd,
+            input=prompt,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning("Claude CLI timed out after %ds", timeout)
         return None
 
+    if result.returncode != 0:
+        logger.warning("Claude CLI error: exit %d, %s", result.returncode, result.stderr[:200])
+        return None
 
-def extract_from_gaps(
-    gap_turns: list[str],
-    context_before: list[str] | None = None,
-    context_after: list[str] | None = None,
-    model: str = "claude-haiku-4-5-20251001",
+    try:
+        response_data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        logger.warning("Claude CLI returned non-JSON")
+        return None
+
+    # Try structured_output first, then result
+    structured = response_data.get("structured_output")
+    if structured:
+        return json.dumps(structured)
+
+    raw = response_data.get("result", "")
+    return raw if raw else None
+
+
+async def extract_from_gaps(
+    gap_turns: list[dict[str, Any]],
+    transcript: str,
+    context_window: int = 500,
 ) -> list[ExtractedFact]:
-    """Extract facts from gap turns using Claude API.
+    """Extract facts from gap turns using claude -p.
 
     Args:
-        gap_turns: List of turn texts from the gap
-        context_before: 3-5 turns before the gap (for reference resolution)
-        context_after: 2-3 turns after the gap
-        model: Claude model to use (Haiku for cost efficiency)
+        gap_turns: List of {"index": int, "text": str}
+        transcript: Full transcript for context
+        context_window: Chars of context before/after gap
 
     Returns:
         List of extracted facts
     """
-    client = _get_client()
-    if client is None:
+    if not gap_turns:
         return []
+
+    gap_text = "\n".join(t["text"] for t in gap_turns)
+
+    # Get context before/after first gap
+    first_idx = gap_turns[0].get("index", 0)
+    context_before = transcript[max(0, first_idx - context_window):first_idx] if first_idx > 0 else ""
+    last_text = gap_turns[-1]["text"]
+    last_pos = transcript.find(last_text)
+    context_after = ""
+    if last_pos >= 0:
+        end = last_pos + len(last_text)
+        context_after = transcript[end:end + context_window]
 
     prompt = EXTRACTION_PROMPT.format(
-        context_before="\n".join(context_before or []),
-        gap_turns="\n".join(gap_turns),
-        context_after="\n".join(context_after or []),
+        context_before=context_before,
+        gap_turns=gap_text,
+        context_after=context_after,
     )
 
+    response_text = await asyncio.to_thread(_call_claude, prompt)
+    if not response_text:
+        return []
+
     try:
-        response = client.messages.create(
-            model=model,
-            max_tokens=2000,
-            temperature=0,
-            messages=[{"role": "user", "content": prompt}],
-        )
-
-        text = response.content[0].text
-        data = json.loads(text)
-
-        facts: list[ExtractedFact] = []
-        for f in data.get("facts", []):
-            facts.append(
-                ExtractedFact(
-                    subject=f.get("subject", ""),
-                    predicate=f.get("predicate", ""),
-                    object_value=f.get("object", ""),
-                    source_quote=f.get("source_quote", ""),
-                    confidence=f.get("confidence", "medium"),
-                )
-            )
-        return facts
-
+        data = json.loads(response_text)
     except json.JSONDecodeError:
+        # Try to extract JSON from response
+        with contextlib.suppress(json.JSONDecodeError, ValueError):
+            start = response_text.index("{")
+            end = response_text.rindex("}") + 1
+            data = json.loads(response_text[start:end])
+            return _parse_facts(data)
         logger.warning("Gap extraction returned non-JSON response")
         return []
-    except Exception:
-        logger.exception("Gap extraction failed")
-        return []
+
+    return _parse_facts(data)
 
 
-def reconcile_facts(
+def _parse_facts(data: dict[str, Any]) -> list[ExtractedFact]:
+    """Parse facts from JSON response."""
+    facts: list[ExtractedFact] = []
+    for f in data.get("facts", []):
+        facts.append(
+            ExtractedFact(
+                subject=f.get("subject", ""),
+                predicate=f.get("predicate", ""),
+                object_value=f.get("object", ""),
+                source_quote=f.get("source_quote", ""),
+            )
+        )
+    return facts
+
+
+async def reconcile_facts(
     new_facts: list[ExtractedFact],
     existing_facts: list[dict[str, str]],
-    model: str = "claude-sonnet-4-20250514",
-) -> list[ReconciliationAction]:
-    """Reconcile extracted facts against existing memories.
+) -> list[dict[str, Any]]:
+    """Reconcile extracted facts against existing memories using claude -p.
 
-    Args:
-        new_facts: Facts extracted from gap turns
-        existing_facts: Existing facts as dicts with 'id', 'text' keys
-        model: Claude model (Sonnet for better reasoning)
-
-    Returns:
-        List of reconciliation actions (ADD/UPDATE/NOOP)
+    Returns list of dicts with keys: entity, predicate, object, source_quote, action, reasoning
     """
     if not new_facts:
         return []
 
-    client = _get_client()
-    if client is None:
-        # Without API, default to ADD everything
+    # If no existing facts, all are ADD
+    if not existing_facts:
         return [
-            ReconciliationAction(
-                fact=f,
-                action="ADD",
-                target_fact_id=None,
-                reasoning="No API available, defaulting to ADD",
-            )
+            {
+                "entity": f.subject,
+                "predicate": f.predicate,
+                "object": f.object_value,
+                "source_quote": f.source_quote,
+                "action": "ADD",
+                "reasoning": "No existing facts",
+            }
             for f in new_facts
         ]
 
     existing_text = "\n".join(
-        f"[{ef['id']}] {ef['text']}" for ef in existing_facts
+        f"- {ef['entity']} {ef['predicate']} {ef['object']}" for ef in existing_facts
     )
     new_text = "\n".join(
         f"[{i}] {f.subject} {f.predicate} {f.object_value}" for i, f in enumerate(new_facts)
@@ -205,40 +240,58 @@ def reconcile_facts(
         new_facts=new_text,
     )
 
+    response_text = await asyncio.to_thread(_call_claude, prompt)
+    if not response_text:
+        # Fallback: ADD everything
+        return [
+            {
+                "entity": f.subject,
+                "predicate": f.predicate,
+                "object": f.object_value,
+                "source_quote": f.source_quote,
+                "action": "ADD",
+                "reasoning": "Claude unavailable, defaulting to ADD",
+            }
+            for f in new_facts
+        ]
+
     try:
-        response = client.messages.create(
-            model=model,
-            max_tokens=2000,
-            temperature=0,
-            messages=[{"role": "user", "content": prompt}],
-        )
-
-        text = response.content[0].text
-        data = json.loads(text)
-
-        actions: list[ReconciliationAction] = []
-        for a in data.get("actions", []):
-            fact_idx = a.get("fact_index", 0)
-            if 0 <= fact_idx < len(new_facts):
-                actions.append(
-                    ReconciliationAction(
-                        fact=new_facts[fact_idx],
-                        action=a.get("action", "ADD"),
-                        target_fact_id=a.get("target_memory_id"),
-                        reasoning=a.get("reasoning", ""),
-                    )
-                )
-        return actions
-
+        data = json.loads(response_text)
     except json.JSONDecodeError:
-        logger.warning("Reconciliation returned non-JSON response")
+        with contextlib.suppress(json.JSONDecodeError, ValueError):
+            start = response_text.index("{")
+            end = response_text.rindex("}") + 1
+            data = json.loads(response_text[start:end])
+            return _parse_actions(data, new_facts)
+        # Fallback
         return [
-            ReconciliationAction(fact=f, action="ADD", target_fact_id=None, reasoning="Parse error fallback")
+            {
+                "entity": f.subject,
+                "predicate": f.predicate,
+                "object": f.object_value,
+                "source_quote": f.source_quote,
+                "action": "ADD",
+                "reasoning": "Parse error fallback",
+            }
             for f in new_facts
         ]
-    except Exception:
-        logger.exception("Reconciliation failed")
-        return [
-            ReconciliationAction(fact=f, action="ADD", target_fact_id=None, reasoning="Error fallback")
-            for f in new_facts
-        ]
+
+    return _parse_actions(data, new_facts)
+
+
+def _parse_actions(data: dict[str, Any], new_facts: list[ExtractedFact]) -> list[dict[str, Any]]:
+    """Parse reconciliation actions from JSON response."""
+    results: list[dict[str, Any]] = []
+    for a in data.get("actions", []):
+        fact_idx = a.get("fact_index", 0)
+        if 0 <= fact_idx < len(new_facts):
+            f = new_facts[fact_idx]
+            results.append({
+                "entity": f.subject,
+                "predicate": f.predicate,
+                "object": f.object_value,
+                "source_quote": f.source_quote,
+                "action": a.get("action", "ADD"),
+                "reasoning": a.get("reasoning", ""),
+            })
+    return results

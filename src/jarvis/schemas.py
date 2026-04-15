@@ -143,3 +143,52 @@ class UserResponse(BaseModel):
 class MemberInvite(BaseModel):
     email: str
     role: str = "contributor"
+
+
+# ── Transcript Upload (Path B) ──
+
+
+class UploadTranscriptRequest(BaseModel):
+    workspace_id: uuid.UUID
+    provider: str = Field(default="manual", description="AI provider: openai, anthropic, google, manual")
+    transcript: str = Field(..., description="Raw conversation transcript")
+    summary: str = ""
+
+
+class UploadTranscriptResponse(BaseModel):
+    episode_id: uuid.UUID
+    session_id: uuid.UUID
+    status: str = "processing"
+
+
+# ── Gap Analysis ──
+
+
+class AnalyzeGapsRequest(BaseModel):
+    workspace_id: uuid.UUID
+    episode_id: uuid.UUID
+
+
+class GapCandidate(BaseModel):
+    turn_index: int
+    text: str
+    priority_score: float
+
+
+class AnalyzeGapsResponse(BaseModel):
+    recommendation: str = Field(..., description="skip, gap_fill, or full_extract")
+    coverage_ratio: float
+    gap_count: int
+    gaps: list[GapCandidate] = Field(default_factory=list)
+
+
+class ExtractGapsRequest(BaseModel):
+    workspace_id: uuid.UUID
+    episode_id: uuid.UUID
+    gap_turns: list[int] = Field(default_factory=list, description="Turn indices to extract from")
+
+
+class ExtractGapsResponse(BaseModel):
+    facts_extracted: int
+    facts_stored: int
+    supersedes: int

@@ -5,6 +5,7 @@ Uses hybrid_graph_search SQL function for single-query 3-way RRF (vector + FTS +
 Falls back to Python-side search when SQL function is not available.
 """
 
+import logging
 import uuid
 
 from sqlalchemy import select, text
@@ -25,6 +26,8 @@ from jarvis.schemas import (
     RecallMemoryRequest,
     RecallMemoryResponse,
 )
+
+logger = logging.getLogger(__name__)
 
 
 async def _hybrid_search_sql(
@@ -211,6 +214,8 @@ async def recall_memory(db: AsyncSession, request: RecallMemoryRequest) -> Recal
 
     # Extract seed entities for graph expansion
     seed_ids = await _extract_query_entities(db, request.workspace_id, query_vector)
+    if seed_ids:
+        logger.info("Seed entities: %s for query '%s'", seed_ids, request.query[:50])
 
     # Try SQL function first (1 DB round-trip)
     results: list[RecallFactResponse] = []
@@ -223,8 +228,10 @@ async def recall_memory(db: AsyncSession, request: RecallMemoryRequest) -> Recal
             if fact:
                 resp = await _build_fact_response(db, fact, float(rrf_score))
                 results.append(resp)
+        logger.info("Hybrid search: %d results for '%s'", len(results), request.query[:50])
     except Exception:
         # Fallback: simple ILIKE search
+        logger.warning("Hybrid search unavailable, using ILIKE fallback for '%s'", request.query[:50])
         fallback_rows = await _fallback_search(db, request.workspace_id, request.query, request.limit)
         for fact_id, score in fallback_rows:
             fact_result = await db.execute(select(KnowledgeFact).where(KnowledgeFact.id == fact_id))
@@ -232,5 +239,6 @@ async def recall_memory(db: AsyncSession, request: RecallMemoryRequest) -> Recal
             if fact:
                 resp = await _build_fact_response(db, fact, float(score))
                 results.append(resp)
+        logger.info("Fallback search: %d results for '%s'", len(results), request.query[:50])
 
     return RecallMemoryResponse(results=results)

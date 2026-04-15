@@ -1,6 +1,7 @@
 """FastAPI application entry point."""
 
 import contextlib
+import logging
 from collections.abc import AsyncGenerator
 
 from fastapi import FastAPI
@@ -18,6 +19,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     async with mcp.session_manager.run():
         yield
 
+
+# Logging setup
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+)
 
 app = FastAPI(
     title="JARVIS",
