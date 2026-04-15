@@ -489,7 +489,91 @@ claude -p --output-format json --model sonnet --tools "" \
 
 **파일**: `knowledge-extraction/scripts/extract_knowledge.py`
 
-**다음 할 일**: `--pilot 3`으로 실제 추출 테스트 → 품질 확인 → 전체 배치
+#### extract_knowledge.py 파일럿 결과 + 문제 발견
+
+7세션 파일럿 실행. 평균 grounding rate 90.9% (마크다운 strip 적용 후). 추출 품질 자체는 의미 있는 fact들을 잡아내지만, 정성적 검수에서 두 가지 근본 문제 발견:
+
+**문제 1: Predicate 불일치**
+- 같은 개념이 세션마다 다른 predicate로 추출됨
+  - 03-25: `uses_mcp_tool_count → 2개`
+  - 04-01: `has_mcp_tools → 4개`
+- 원인: 각 세션이 독립적으로 추출되어 이전 fact를 모름
+- 영향: 서버의 supersede가 동작하지 않음 (다른 predicate = 다른 사실로 인식)
+
+**문제 2: 대형 세션 source_quote fabrication**
+- 1926턴 세션을 통째로 넣으니 모델이 source_quote를 정확히 복사하지 못함
+- 원문에 없는 문장을 조합해서 만들어냄 (fabrication)
+- 예: 원문 `"프로젝트: 펀드메신저 v2"` → 추출 quote `"나는 지금 펀드메신저 프로젝트를 진행 중이야"` (없는 문장)
+- grounding rate 50%의 원인
+
+**근본 원인**: 독립 추출은 실사용과 다르다. 실사용에서는 AI 클라이언트가 서버 상태를 알고 있는 채로 3-5턴마다 증분 저장. 독립 추출은 이 피드백 루프를 완전히 우회.
+
+**사용자 핵심 지적**: "사용자가 처음부터 자비스를 쓰고 있었던 것처럼 느낄 수 있어야 한다" — 이건 온보딩이다. 독립 추출→나중 import는 이 요구를 충족하지 못함.
+
+#### seed_jarvis.py — 실사용 시뮬레이션 방식으로 재설계
+
+extract_knowledge.py의 독립 추출 방식을 버리고, 실사용 흐름을 그대로 재현하는 `seed_jarvis.py` 작성.
+
+**핵심 변경: 턴 그룹 단위 증분 처리**
+```
+세션 N의 각 턴 그룹 (5턴):
+  1. recall_memory → 기존 fact 가져오기
+  2. 기존 fact를 프롬프트에 포함 (existing_facts 섹션)
+  3. claude -p로 추출 (작은 컨텍스트 → 정확한 source_quote)
+  4. store_memory API → 서버가 entity resolution + predicate resolution + NLI + supersede 처리
+  5. 다음 턴 그룹
+```
+
+**이전 방식(extract_knowledge.py)과 차이**:
+- 세션 통째로 → 5턴씩 증분
+- 독립 추출 → recall→extract→store 루프
+- 프롬프트에 entity만 → entity + existing facts
+- 나중에 import → 추출 즉시 서버 저장
+
+**초기 결과** (1926턴 세션 1, 진행 중):
+- grounding rate: 대부분 100% (이전 50% → 100%)
+- supersede: 매 그룹마다 발생 — 변경 추적이 실사용처럼 동작
+- 청크 사이즈 문제 없음 — 5턴이라 타임아웃 불가
+
+**프로덕션 온보딩 고려**: 턴 그룹마다 개별 호출이라 느림. 프로덕션에서는 Batch API로 전환 필요.
+
+**파일**: `knowledge-extraction/scripts/seed_jarvis.py`
+
+#### 8세션 시딩 완료 + recall 검증 결과
+
+**시딩 완료 결과**:
+- 8세션 (전부 fundmessenger, 03-14~03-16)
+- 1,469 entities, 1,807 facts, 759 relations, 347 supersedes
+- 비용 $21.06
+
+**recall 검증** — MCP recall_memory로 직접 테스트:
+
+1. "펀드메신저를 왜 만들게 되었는지" → 뉴스/AI 파이프라인 fact에 편향. 프로젝트 개요 수준 정보가 상위에 안 올라옴
+2. 쿼리를 바꿔서 "동아리 관리", "멤버 가입", "기술 스택" 등으로 구체적으로 물어보니 다양한 기능 파악 가능
+3. 최종 종합: 펀드메신저가 "대학 투자동아리용 SaaS 플랫폼"이고 동아리 관리/종목관리/AI 뉴스/종토방/메시징/게시판/마이페이지 등을 포함한다는 전체 그림 파악 가능
+4. supersede 이력 확인: `뉴스 작성자 페르소나 implementation_status`가 4단계 변경 이력 추적됨
+5. 사용자 결정 추적: `동아리별 관심종목 rejected_by_user` 등
+
+**발견된 문제**:
+- recall이 한 번에 편향된 결과 반환 → AI가 여러 번 recall해야 전체 파악 가능. recall 결과에 카테고리 메타 정보 포함하면 개선 가능
+- "댐퍼" (API 키 로테이션) 관련 fact 없음 → 시딩 범위(8세션) 밖의 세션에 존재. 71개 전체 시딩 필요
+- 시딩 스크립트가 서버 밖에서 동작 — Path B + 보완 파이프라인으로 서버 내부에서 처리하는 게 맞는 구조
+
+**설계 vs 구현 갭 전수 조사 결과**:
+
+| 미구현 항목 | 영향 |
+|------------|------|
+| Defense-in-depth 전체 (Stop hook, CLAUDE.md 템플릿, bootstrap 프라이밍, readOnlyHint) | AI가 자발적으로 자비스를 안 부름 — 이 세션에서 직접 체험 |
+| Path B (Episode 원본 자동 저장 + YAKE/GLiNER) | 온보딩/보완 파이프라인의 전제조건 |
+| Path C (transcript_path POST, 미정리 세션 감지) | 세션 복구 불가 |
+| 보완 파이프라인 API 연결 | gap_detection.py, gap_extraction.py dead code |
+| temporal 필드 처리 | schemas.py에 있지만 store.py에서 무시 |
+| soft decay | recall에서 오래된 fact 순위 안 내려감 |
+| Entity merge 중간 티어 (0.85 로그, 0.78 리뷰) | 0.92만 auto-merge |
+
+**방향 전환**: 시딩 스크립트 방식(서버 밖) → Path B + 보완 파이프라인(서버 안)으로 온보딩 구현. 이러면 시딩 스크립트 불필요, 일반 사용자 온보딩도 같은 흐름. claude -p + sonnet 사용.
+
+**다음 할 일**: Path B + 보완 파이프라인 구현 → 서버 내부에서 온보딩 처리
 
 #### 사용자 수정/지적 기록
 
@@ -498,6 +582,9 @@ claude -p --output-format json --model sonnet --tools "" \
 - "오픈클로는 오픈소스인데 코드를 보면 되잖아" — 추측 대신 실제 구현 확인이 정답
 - "왜 자꾸 Batch API를 대안으로 넣느냐" — 이미 결정된 사항을 반복 제시하지 말 것
 - "Claude Code에서 기본사용량 차감이 확실한데 왜 Extra Usage라고 하냐" — CLI 일반 사용은 기본 사용량, 서드파티 사용분만 Extra Usage
+- "왜 실사용처럼 해야한다고 합의했는데 세션 통째로 넣었냐" — 비용/시간 걱정으로 편한 쪽으로 타협한 실수. 인풋 총량 동일하고 오히려 대형 세션 타임아웃이 문제
+- "이건 온보딩이다" — 시딩 품질은 JARVIS의 첫인상. 사용자가 처음부터 쓰고 있었던 것처럼 느껴야 함
+- "자꾸 컨텍스트 컴팩트 하자고 하지 마" — 33% 사용 중인데 불필요한 중단 제안. 작업 연속성 유지
 
 ---
 
@@ -533,6 +620,11 @@ claude -p --output-format json --model sonnet --tools "" \
 | 26 | `claude -p` CLI 파이프 모드로 Extra Usage 과금 활용 | 04-15 | anthropic SDK 불가 → CLI subprocess 호출로 우회. OpenClaw과 동일 방식. 밴 위험 0 |
 | 27 | `--json-schema`로 구조화 출력 보장 | 04-15 | 서버사이드 constrained decoding. `structured_output` 필드로 파싱된 JSON 직접 반환 |
 | 28 | canonical entity list 누적으로 세션 간 일관성 | 04-15 | 순차 처리 시 이전 세션의 entity를 프롬프트에 포함. 독립 추출이지만 entity naming은 일관 |
+| 29 | 턴 그룹 단위 증분 시딩 = 실사용 시뮬레이션 | 04-15 | 5턴씩 recall→extract→store. source_quote 정확도 50%→100%, predicate 일관성 확보, supersede 동작 |
+| 30 | existing_facts를 프롬프트에 포함하면 predicate 재사용 유도 | 04-15 | entity만 넘기면 predicate 제각각. fact까지 보여주면 모델이 동일 predicate 재사용 |
+| 31 | 프로덕션 온보딩은 Batch API 전환 필요 | 04-15 | 턴 그룹마다 개별 호출은 느림. Batch API면 한번에 제출 + 50% 할인 |
+| 32 | recall 결과에 카테고리 메타 정보 포함 | 04-16 | "entity에 대해 총 N개 fact 중 상위 10개, 카테고리: 동아리관리(15), AI(20)..." → AI가 넓게 탐색 가능 |
+| 33 | 온보딩 = Path B + 보완 파이프라인 (서버 내부) | 04-16 | 시딩 스크립트(서버 밖)가 아니라 Episode 업로드 → 서버가 보완 추출. 일반 사용자와 동일 흐름 |
 
 ## 실패/수정 기록
 
@@ -551,3 +643,8 @@ claude -p --output-format json --model sonnet --tools "" \
 | AI 에이전트에 과금 조사 위임 | hallucination 섞인 정보 반복, "OAuth 2월에 차단됨" 등 허위 정보 | 직접 공식 문서 확인 + 오픈소스 코드 확인이 정답. 에이전트 결과 무조건 검증 필수 |
 | "claude -p는 기본 사용량에서 차감" 반복 주장 | 서드파티 사용분은 Extra Usage에서 차감 (마이그레이션 가이드 명시) | OpenClaw 오픈소스 코드 + 공식 발언으로 확인 |
 | OAuth 토큰 추출해서 SDK 테스트 제안 | 토큰 탈취 행위 = 밴 사유 | 절대 하면 안 됨. CLI 정상 사용이 유일한 안전 경로 |
+| extract_knowledge.py 독립 추출 방식 | predicate 불일치 + source_quote fabrication + 변경 추적 불가 | seed_jarvis.py로 재설계: 턴 그룹 단위 recall→extract→store 루프 |
+| 세션 통째로 추출 (실사용과 다른 방식) | 대형 세션 타임아웃 + grounding 50% | 5턴 단위 증분으로 전환. 합의한 설계를 구현에 반영하지 않은 실수 |
+| 시딩을 서버 밖 스크립트로 구현 | 서버 기능 우회, 일반 사용자 온보딩과 다른 흐름 | Path B + 보완 파이프라인을 서버에 구현하면 시딩 = 온보딩 = 같은 코드 |
+| 이미 결정된 사항(claude -p) 또 흔듦 | "API 크레딧으로 할 건지 결정 필요" — 불필요한 혼란 | 결정된 건 다시 꺼내지 말 것 |
+| 보완 파이프라인에 하이쿠 제안 | 소넷으로 잘 되고 있는데 성능 테스트 없이 모델 변경 제안 | 동작하는 걸 건드리지 말 것 |
