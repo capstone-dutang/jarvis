@@ -163,12 +163,42 @@ async def _build_fact_response(
     )
 
 
+async def _extract_query_entities(
+    db: AsyncSession,
+    workspace_id: uuid.UUID,
+    query_vector: list[float],
+    top_k: int = 3,
+) -> list[uuid.UUID]:
+    """Find entities most similar to the query for graph seed.
+
+    Uses pgvector cosine similarity on entity name embeddings.
+    Returns up to top_k entity IDs as seed for graph expansion.
+    """
+    if not query_vector:
+        return []
+    try:
+        result = await db.execute(
+            text("""
+                SELECT id FROM entities
+                WHERE workspace_id = :ws
+                  AND name_embedding IS NOT NULL
+                ORDER BY name_embedding <=> cast(:vec as vector)
+                LIMIT :k
+            """),
+            {"ws": str(workspace_id), "vec": str(query_vector), "k": top_k},
+        )
+        return [row[0] for row in result.fetchall()]
+    except Exception:
+        return []
+
+
 async def recall_memory(db: AsyncSession, request: RecallMemoryRequest) -> RecallMemoryResponse:
     """Full recall pipeline: single SQL function call for hybrid search.
 
     1. Embed query
-    2. Call hybrid_graph_search SQL function (vector + FTS + graph → RRF)
-    3. Build full fact responses with evidence and history
+    2. Extract seed entities for graph expansion
+    3. Call hybrid_graph_search SQL function (vector + FTS + graph → RRF)
+    4. Build full fact responses with evidence and history
     """
     # Embed query
     query_vector: list[float] = []
@@ -179,10 +209,13 @@ async def recall_memory(db: AsyncSession, request: RecallMemoryRequest) -> Recal
     except Exception:
         pass
 
+    # Extract seed entities for graph expansion
+    seed_ids = await _extract_query_entities(db, request.workspace_id, query_vector)
+
     # Try SQL function first (1 DB round-trip)
     results: list[RecallFactResponse] = []
     try:
-        rows = await _hybrid_search_sql(db, request.workspace_id, request.query, query_vector, [], request.limit)
+        rows = await _hybrid_search_sql(db, request.workspace_id, request.query, query_vector, seed_ids, request.limit)
         for row in rows:
             fact_id, entity_id, entity_name, predicate, object_value, rrf_score, sources = row
             fact_result = await db.execute(select(KnowledgeFact).where(KnowledgeFact.id == fact_id))

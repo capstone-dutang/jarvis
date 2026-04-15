@@ -268,6 +268,107 @@ def _classify_fragment_type(predicate: str) -> FragmentType:
     return FragmentType.fact
 
 
+async def _check_nli_contradictions(
+    db: AsyncSession,
+    workspace_id: uuid.UUID,
+    entity: Entity,
+    new_fact: KnowledgeFact,
+    resolved_predicate: str,
+) -> None:
+    """Check new fact against existing facts of the same entity using NLI.
+
+    Only runs for facts with DIFFERENT predicates (same predicate already handled by supersede).
+    Uses entity-blocking: only compare facts sharing the same entity.
+    """
+    try:
+        from jarvis.core.embedding import embed_text
+        from jarvis.core.nli_detection import ConflictType, detect_contradictions
+
+        # Get active facts for same entity, different predicate
+        result = await db.execute(
+            select(KnowledgeFact).where(
+                KnowledgeFact.entity_id == entity.id,
+                KnowledgeFact.predicate != resolved_predicate,
+                KnowledgeFact.superseded_at.is_(None),
+                KnowledgeFact.id != new_fact.id,
+            )
+        )
+        existing_facts = result.scalars().all()
+
+        if not existing_facts:
+            return
+
+        # Build fact texts and compute cosine similarities
+        new_text = f"{entity.name} {new_fact.predicate} {new_fact.object_value}"
+        new_vec = embed_text(new_text)
+
+        import numpy as np
+
+        candidates: list[tuple[str, float]] = []
+        candidate_facts: list[KnowledgeFact] = []
+
+        for ef in existing_facts:
+            ef_text = f"{entity.name} {ef.predicate} {ef.object_value}"
+            ef_vec = embed_text(ef_text)
+            cos_sim = float(np.dot(new_vec, ef_vec))
+            # Only consider facts with some semantic overlap
+            if cos_sim > 0.40:
+                candidates.append((ef_text, cos_sim))
+                candidate_facts.append(ef)
+
+        if not candidates:
+            return
+
+        # Run NLI detection
+        nli_results = detect_contradictions(new_text, candidates)
+
+        for nli_result in nli_results:
+            matching_fact = next(
+                (cf for cf, (ct, _) in zip(candidate_facts, candidates, strict=True) if ct == nli_result.existing_fact_text),
+                None,
+            )
+            if not matching_fact:
+                continue
+
+            if nli_result.conflict_type == ConflictType.contradiction_auto:
+                # Auto supersede the contradicted fact
+                matching_fact.superseded_at = func.now()
+                matching_fact.valid_to = func.now()
+                logger.info(
+                    "NLI auto-supersede: '%s %s %s' contradicts '%s %s %s' (score=%.3f)",
+                    entity.name, new_fact.predicate, new_fact.object_value,
+                    entity.name, matching_fact.predicate, matching_fact.object_value,
+                    nli_result.contradiction,
+                )
+
+            elif nli_result.conflict_type == ConflictType.contradiction_review:
+                logger.warning(
+                    "NLI review needed: '%s %s %s' may contradict '%s %s %s' (score=%.3f)",
+                    entity.name, new_fact.predicate, new_fact.object_value,
+                    entity.name, matching_fact.predicate, matching_fact.object_value,
+                    nli_result.contradiction,
+                )
+
+            elif nli_result.conflict_type == ConflictType.duplicate:
+                logger.info(
+                    "NLI duplicate detected: '%s %s %s' ≈ '%s %s %s'",
+                    entity.name, new_fact.predicate, new_fact.object_value,
+                    entity.name, matching_fact.predicate, matching_fact.object_value,
+                )
+
+            elif nli_result.conflict_type == ConflictType.refinement:
+                logger.info(
+                    "NLI refinement: '%s %s %s' refines '%s %s %s'",
+                    entity.name, new_fact.predicate, new_fact.object_value,
+                    entity.name, matching_fact.predicate, matching_fact.object_value,
+                )
+
+    except ImportError:
+        logger.debug("NLI or embedding not available, skipping contradiction check")
+    except Exception:
+        logger.exception("NLI contradiction check failed")
+
+
 async def store_fact(
     db: AsyncSession,
     workspace_id: uuid.UUID,
@@ -327,6 +428,13 @@ async def store_fact(
         source_fact_id=new_fact.id,
     )
     db.add(fragment)
+
+    # NLI contradiction detection — check against other facts of the same entity
+    # Skip if we already did predicate-level supersede (same entity + same predicate)
+    if not is_supersede:
+        await _check_nli_contradictions(
+            db, workspace_id, entity, new_fact, resolved_predicate
+        )
 
     return StoredFactResponse(
         fact_id=new_fact.id,
