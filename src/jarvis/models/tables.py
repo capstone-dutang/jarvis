@@ -139,6 +139,7 @@ class Episode(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)  # raw transcript
     summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
     metadata_: Mapped[dict[str, object] | None] = mapped_column("metadata", JSONB, nullable=True)
+    processing_status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")  # pending/processing/done/failed
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     session: Mapped["Session"] = relationship(back_populates="episodes")

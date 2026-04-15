@@ -16,8 +16,16 @@ from jarvis.middleware.rate_limit import RateLimitMiddleware
 
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
+    import asyncio
+
+    from jarvis.core.worker import episode_worker
+
     async with mcp.session_manager.run():
+        worker_task = asyncio.create_task(episode_worker())
         yield
+        worker_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await worker_task
 
 
 # Logging setup
