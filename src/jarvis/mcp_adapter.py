@@ -64,7 +64,7 @@ async def _resolve_workspace(workspace: str) -> uuid.UUID:
 # ── Tool 1: Workspace Management ──
 
 
-@mcp.tool()
+@mcp.tool(name="jarvis_manage_workspace")
 async def manage_workspace(
     action: str,
     name: str = "",
@@ -136,7 +136,7 @@ async def manage_workspace(
 # ── Tool 2: Initialize Memory ──
 
 
-@mcp.tool()
+@mcp.tool(name="jarvis_initialize_memory")
 async def initialize_memory(workspace: str = "") -> str:
     """Initialize memory session. Call this at the start of every conversation.
 
@@ -211,7 +211,7 @@ async def initialize_memory(workspace: str = "") -> str:
 # ── Tool 3: Store Memory ──
 
 
-@mcp.tool()
+@mcp.tool(name="jarvis_store_memory")
 async def store_memory(
     workspace: str,
     provider: str,
@@ -278,7 +278,7 @@ async def store_memory(
 # ── Tool 4: Recall Memory ──
 
 
-@mcp.tool()
+@mcp.tool(name="jarvis_recall_memory")
 async def recall_memory(
     workspace: str,
     query: str,

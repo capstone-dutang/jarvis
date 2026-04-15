@@ -13,17 +13,20 @@ from jarvis.core.quote_verification import verify_quote
 from jarvis.models.tables import (
     Embedding,
     Entity,
+    EntityRelation,
     EntityType,
     Episode,
     Fragment,
     FragmentType,
     KnowledgeFact,
+    RelationType,
     Session,
     TrustLevel,
 )
 from jarvis.schemas import (
     EntityHint,
     FactHint,
+    RelationHint,
     StoredFactResponse,
     StoreMemoryRequest,
     StoreMemoryResponse,
@@ -446,6 +449,54 @@ async def store_fact(
     )
 
 
+def _resolve_relation_type(type_str: str) -> RelationType:
+    """Map free-form relation type string to enum."""
+    type_lower = type_str.lower().replace("-", "_").replace(" ", "_")
+    try:
+        return RelationType(type_lower)
+    except ValueError:
+        return RelationType.related_to
+
+
+async def _store_relation(
+    db: AsyncSession,
+    workspace_id: uuid.UUID,
+    rel_hint: RelationHint,
+    entity_map: dict[str, Entity],
+    episode: Episode,
+) -> None:
+    """Store an entity relation, resolving entity names to IDs."""
+    # Resolve from/to entities
+    from_entity = entity_map.get(rel_hint.from_entity)
+    to_entity = entity_map.get(rel_hint.to_entity)
+
+    if not from_entity:
+        from_entity, _ = await resolve_entity(
+            db, workspace_id,
+            EntityHint(name=rel_hint.from_entity, entity_type="other", source_quote=rel_hint.source_quote),
+        )
+        entity_map[rel_hint.from_entity] = from_entity
+
+    if not to_entity:
+        to_entity, _ = await resolve_entity(
+            db, workspace_id,
+            EntityHint(name=rel_hint.to_entity, entity_type="other", source_quote=rel_hint.source_quote),
+        )
+        entity_map[rel_hint.to_entity] = to_entity
+
+    if from_entity.id == to_entity.id:
+        return  # Skip self-relations
+
+    relation = EntityRelation(
+        workspace_id=workspace_id,
+        from_entity_id=from_entity.id,
+        to_entity_id=to_entity.id,
+        relation_type=_resolve_relation_type(rel_hint.relation_type),
+        source_episode_id=episode.id,
+    )
+    db.add(relation)
+
+
 async def _auto_summarize(transcript: str, max_chars: int = 2000) -> str:
     """Generate a session summary using Claude API if available.
 
@@ -537,6 +588,10 @@ async def store_memory(db: AsyncSession, request: StoreMemoryRequest) -> StoreMe
             request.conversation_transcript,
         )
         stored_facts.append(fact_resp)
+
+    # Store relations
+    for rel_hint in request.relations:
+        await _store_relation(db, request.workspace_id, rel_hint, entity_map, episode)
 
     await db.commit()
 

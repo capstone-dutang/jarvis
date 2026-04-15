@@ -25,6 +25,16 @@ class FactHint(BaseModel):
     source_quote: str = Field(..., description="Exact quote from conversation supporting this fact")
 
 
+class RelationHint(BaseModel):
+    from_entity: str = Field(..., description="Source entity name (must match an entity)")
+    to_entity: str = Field(..., description="Target entity name (must match an entity)")
+    relation_type: str = Field(
+        default="related_to",
+        description="One of: supports, contradicts, depends_on, part_of, related_to",
+    )
+    source_quote: str = Field(default="", description="Exact quote from conversation")
+
+
 class StoreMemoryRequest(BaseModel):
     workspace_id: uuid.UUID
     session_id: uuid.UUID | None = None
@@ -32,6 +42,7 @@ class StoreMemoryRequest(BaseModel):
     conversation_transcript: str
     entities: list[EntityHint] = Field(default_factory=list)
     facts: list[FactHint] = Field(default_factory=list)
+    relations: list[RelationHint] = Field(default_factory=list)
     conversation_summary: str = ""
 
 
