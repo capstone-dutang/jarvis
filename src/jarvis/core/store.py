@@ -446,6 +446,36 @@ async def store_fact(
     )
 
 
+async def _auto_summarize(transcript: str, max_chars: int = 2000) -> str:
+    """Generate a session summary using Claude API if available.
+
+    Falls back to first 200 chars of transcript if API is not available.
+    """
+    try:
+        import os
+
+        import anthropic
+
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if not api_key:
+            return transcript[:200] + "..." if len(transcript) > 200 else transcript
+
+        client = anthropic.Anthropic(api_key=api_key)
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=200,
+            temperature=0,
+            messages=[{
+                "role": "user",
+                "content": f"Summarize this conversation in 1-2 sentences. Be specific about decisions, tools, and outcomes:\n\n{transcript[:max_chars]}",
+            }],
+        )
+        return response.content[0].text
+    except Exception:
+        logger.debug("Auto-summarize unavailable, using transcript excerpt")
+        return transcript[:200] + "..." if len(transcript) > 200 else transcript
+
+
 async def store_memory(db: AsyncSession, request: StoreMemoryRequest) -> StoreMemoryResponse:
     """Full store_memory pipeline (Transaction A — synchronous).
 
@@ -459,12 +489,17 @@ async def store_memory(db: AsyncSession, request: StoreMemoryRequest) -> StoreMe
     """
     session = await get_or_create_session(db, request.workspace_id, request.session_id, request.provider)
 
+    # Auto-generate summary if not provided
+    summary = request.conversation_summary
+    if not summary.strip():
+        summary = await _auto_summarize(request.conversation_transcript)
+
     episode = await create_episode(
         db,
         session,
         request.workspace_id,
         request.conversation_transcript,
-        request.conversation_summary,
+        summary,
         request.provider,
     )
 
