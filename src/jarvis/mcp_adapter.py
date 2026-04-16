@@ -19,6 +19,7 @@ from jarvis.schemas import (
     EntityHint,
     FactHint,
     RecallMemoryRequest,
+    RelationHint,
     StoreMemoryRequest,
 )
 
@@ -218,6 +219,7 @@ async def store_memory(
     conversation_transcript: str,
     entities: list[dict[str, str]],
     facts: list[dict[str, str]],
+    relations: list[dict[str, str]] | None = None,
     conversation_summary: str = "",
 ) -> str:
     """Store structured knowledge extracted from the current conversation.
@@ -236,6 +238,7 @@ async def store_memory(
         conversation_transcript: Raw conversation text
         entities: List of {name, entity_type, source_quote}
         facts: List of {subject, predicate, object, temporal, source_quote}
+        relations: List of {from_entity, to_entity, relation_type, source_quote}
         conversation_summary: Brief summary of the conversation segment
     """
     if len(conversation_transcript) > 50000:
@@ -254,6 +257,7 @@ async def store_memory(
             conversation_transcript=conversation_transcript,
             entities=[EntityHint(**e) for e in entities],
             facts=[FactHint(**f) for f in facts],
+            relations=[RelationHint(**r) for r in (relations or [])],
             conversation_summary=conversation_summary,
         )
 

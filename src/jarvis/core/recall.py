@@ -42,21 +42,27 @@ async def _hybrid_search_sql(
 
     Returns: list of (fact_id, entity_id, entity_name, predicate, object_value, rrf_score, sources)
     """
-    seed_array = "{" + ",".join(str(s) for s in seed_ids) + "}" if seed_ids else "{}"
-
+    # SQLAlchemy text() + asyncpg: uuid[] binding requires building the
+    # array literal as a string since asyncpg's text() path can't infer
+    # the uuid[] type from Python lists. Vector uses cast() as before.
+    seed_literal = (
+        "ARRAY[" + ",".join(f"'{s}'::uuid" for s in seed_ids) + "]"
+        if seed_ids
+        else "'{}'::uuid[]"
+    )
+    sql = f"""
+        SELECT fact_id, entity_id, entity_name, predicate, object_value, rrf_score, sources
+        FROM hybrid_graph_search(
+            cast(:ws as uuid), :query, cast(:vec as vector), {seed_literal},
+            :lim, 1.0, 1.0, 0.5, 2, :rrf_k
+        )
+    """
     result = await db.execute(
-        text("""
-            SELECT fact_id, entity_id, entity_name, predicate, object_value, rrf_score, sources
-            FROM hybrid_graph_search(
-                :ws, :query, cast(:vec as vector), cast(:seeds as uuid[]),
-                :lim, 1.0, 1.0, 0.5, 2, :rrf_k
-            )
-        """),
+        text(sql),
         {
             "ws": str(workspace_id),
             "query": query,
             "vec": str(query_vector),
-            "seeds": seed_array,
             "lim": limit,
             "rrf_k": settings.search_rrf_k,
         },
@@ -192,6 +198,7 @@ async def _extract_query_entities(
         )
         return [row[0] for row in result.fetchall()]
     except Exception:
+        logger.exception("Failed to extract query entities for workspace=%s", workspace_id)
         return []
 
 
@@ -230,8 +237,9 @@ async def recall_memory(db: AsyncSession, request: RecallMemoryRequest) -> Recal
                 results.append(resp)
         logger.info("Hybrid search: %d results for '%s'", len(results), request.query[:50])
     except Exception:
-        # Fallback: simple ILIKE search
-        logger.warning("Hybrid search unavailable, using ILIKE fallback for '%s'", request.query[:50])
+        # Rollback aborted transaction before fallback
+        await db.rollback()
+        logger.exception("Hybrid search FAILED for '%s' — falling back to ILIKE", request.query[:50])
         fallback_rows = await _fallback_search(db, request.workspace_id, request.query, request.limit)
         for fact_id, score in fallback_rows:
             fact_result = await db.execute(select(KnowledgeFact).where(KnowledgeFact.id == fact_id))

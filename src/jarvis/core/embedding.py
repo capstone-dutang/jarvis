@@ -46,3 +46,22 @@ def embed_batch(texts: list[str]) -> list[list[float]]:
     prefixed = [f"query: {t}" for t in texts]
     vectors = model.encode(prefixed, normalize_embeddings=True)
     return vectors.tolist()  # type: ignore[no-any-return]
+
+
+def embed_for_storage(text: str) -> list[float]:
+    """Generate embedding for storage (documents, facts, entities).
+
+    Prepends 'passage: ' prefix as required by E5 models for asymmetric search.
+    Query embeddings use 'query: ' (embed_text), storage uses 'passage: '.
+    """
+    model = _get_model()
+    vector = model.encode(f"passage: {text}", normalize_embeddings=True)
+    return vector.tolist()  # type: ignore[no-any-return]
+
+
+def embed_batch_for_storage(texts: list[str]) -> list[list[float]]:
+    """Generate storage embeddings for multiple texts."""
+    model = _get_model()
+    prefixed = [f"passage: {t}" for t in texts]
+    vectors = model.encode(prefixed, normalize_embeddings=True)
+    return vectors.tolist()  # type: ignore[no-any-return]

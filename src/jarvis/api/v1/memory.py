@@ -104,19 +104,21 @@ async def api_upload_transcript(
         db, session, request.workspace_id,
         request.transcript, request.summary, request.provider,
     )
+    is_duplicate = episode.processing_status != "pending"
     await db.commit()
 
-    logger.info(
-        "Transcript uploaded: episode=%s, session=%s, %d chars",
-        episode.id, session.id, len(request.transcript),
-    )
-
-    # Worker picks up pending episodes automatically (core/worker.py)
+    if is_duplicate:
+        logger.info("Duplicate transcript: episode=%s (already %s)", episode.id, episode.processing_status)
+    else:
+        logger.info(
+            "Transcript uploaded: episode=%s, session=%s, %d chars",
+            episode.id, session.id, len(request.transcript),
+        )
 
     return UploadTranscriptResponse(
         episode_id=episode.id,
         session_id=session.id,
-        status="pending",
+        status=episode.processing_status if is_duplicate else "pending",
     )
 
 

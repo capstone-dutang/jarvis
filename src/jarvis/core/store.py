@@ -1,6 +1,7 @@
 """store_memory pipeline: validate → episode → entities → facts → async embedding."""
 
 import asyncio
+import hashlib
 import logging
 import uuid
 
@@ -75,12 +76,27 @@ async def create_episode(
     """
     from jarvis.core.normalization import normalize_transcript
 
+    content_hash = hashlib.sha256(transcript.encode()).hexdigest()
+
+    # Dedup: same workspace + same content → return existing episode
+    existing = await db.execute(
+        select(Episode).where(
+            Episode.workspace_id == workspace_id,
+            Episode.content_hash == content_hash,
+        )
+    )
+    dup = existing.scalar_one_or_none()
+    if dup:
+        logger.info("Duplicate episode skipped: workspace=%s, hash=%s", workspace_id, content_hash[:12])
+        return dup
+
     normalized = normalize_transcript(provider, transcript)
 
     episode = Episode(
         session_id=session.id,
         workspace_id=workspace_id,
         content=transcript,
+        content_hash=content_hash,
         summary=summary,
         metadata_=normalized.model_dump(),
     )
@@ -119,6 +135,8 @@ async def resolve_entity(
 
     # Stage 2: Embedding candidate retrieval via pgvector
     # Based on: research/multilingual-kg lines 66-76
+    # Uses query: prefix for search vector, name_embedding uses passage: prefix
+    # — E5's intended asymmetric usage (query searches against stored passages).
     candidates: list[tuple[Entity, float]] = []
     try:
         from jarvis.core.embedding import embed_text
@@ -162,13 +180,26 @@ async def resolve_entity(
             best_score = score
             best_match = candidate
 
-    # Threshold decisions
+    # Threshold decisions (definitive doc Section 7-5)
     if best_match and best_score >= 0.92:
         logger.info("Entity resolved: '%s' → '%s' (score=%.3f)", hint.name, best_match.name, best_score)
         return best_match, False
 
     if best_match and best_score >= 0.85:
-        logger.info("Entity resolved (mid-tier): '%s' → '%s' (score=%.3f)", hint.name, best_match.name, best_score)
+        # ≥0.85: merge + log. Add original name to aliases for future Stage 1 lookup.
+        logger.info("Entity resolved (mid-tier merge): '%s' → '%s' (score=%.3f)", hint.name, best_match.name, best_score)
+        if best_match.aliases is None:
+            best_match.aliases = []
+        if hint.name not in best_match.aliases and hint.name != best_match.name:
+            best_match.aliases.append(hint.name)
+        return best_match, False
+
+    if best_match and best_score >= 0.78:
+        # ≥0.78: review candidate — log warning but create new entity
+        logger.warning(
+            "Entity review candidate: '%s' ≈ '%s' (score=%.3f) — not auto-merged",
+            hint.name, best_match.name, best_score,
+        )
 
     # Create new entity
     try:
@@ -184,6 +215,20 @@ async def resolve_entity(
     )
     db.add(entity)
     await db.flush()
+
+    # Synchronous name_embedding — ensures next resolve_entity() Stage 2 finds this entity.
+    # Embedding table entry is created asynchronously by _generate_embeddings() (different purpose: recall search).
+    try:
+        from jarvis.core.embedding import embed_for_storage
+
+        storage_vec = embed_for_storage(normalized)
+        await db.execute(
+            text("UPDATE entities SET name_embedding = cast(:vec as vector) WHERE id = :eid"),
+            {"vec": str(storage_vec), "eid": str(entity.id)},
+        )
+    except Exception:
+        logger.debug("Embedding not available for new entity '%s', will be set by background job", hint.name)
+
     logger.info("Entity created: '%s' (type=%s)", hint.name, entity_type.value)
     return entity, True
 
@@ -315,15 +360,18 @@ async def _check_nli_contradictions(
 
         candidates: list[tuple[str, float]] = []
         candidate_facts: list[KnowledgeFact] = []
+        candidate_cosines: dict[str, float] = {}
 
         for ef in existing_facts:
             ef_text = f"{entity.name} {ef.predicate} {ef.object_value}"
             ef_vec = embed_text(ef_text)
             cos_sim = float(np.dot(new_vec, ef_vec))
-            # Only consider facts with some semantic overlap
-            if cos_sim > 0.40:
+            # Only consider facts with meaningful semantic overlap (0.55 threshold
+            # to avoid NLI false positives on unrelated facts like "uses_workflow" vs "commit_rate")
+            if cos_sim > 0.55:
                 candidates.append((ef_text, cos_sim))
                 candidate_facts.append(ef)
+                candidate_cosines[ef_text] = cos_sim
 
         if not candidates:
             return
@@ -343,11 +391,12 @@ async def _check_nli_contradictions(
                 # Auto supersede the contradicted fact
                 matching_fact.superseded_at = func.now()
                 matching_fact.valid_to = func.now()
+                cos_of_match = candidate_cosines.get(nli_result.existing_fact_text, 0.0)
                 logger.info(
-                    "NLI auto-supersede: '%s %s %s' contradicts '%s %s %s' (score=%.3f)",
+                    "NLI auto-supersede: '%s %s %s' contradicts '%s %s %s' (nli=%.3f, cosine=%.3f)",
                     entity.name, new_fact.predicate, new_fact.object_value,
                     entity.name, matching_fact.predicate, matching_fact.object_value,
-                    nli_result.contradiction,
+                    nli_result.contradiction, cos_of_match,
                 )
 
             elif nli_result.conflict_type == ConflictType.contradiction_review:
@@ -638,13 +687,13 @@ async def _generate_embeddings(
     affect the stored data. Facts without embeddings are still searchable
     via FTS and graph traversal.
     """
-    from jarvis.core.embedding import embed_text
+    from jarvis.core.embedding import embed_for_storage
     from jarvis.db import async_session_factory
 
     try:
         async with async_session_factory() as db:
             # Embed episode
-            vec = embed_text(episode.summary or episode.content[:1000])
+            vec = embed_for_storage(episode.summary or episode.content[:1000])
             db.add(
                 Embedding(
                     workspace_id=workspace_id,
@@ -657,7 +706,7 @@ async def _generate_embeddings(
 
             # Embed entities — write to both Entity.name_embedding and Embedding table
             for entity in entities:
-                vec = embed_text(entity.name)
+                vec = embed_for_storage(entity.name)
                 # Update Entity.name_embedding directly for Stage 2 resolution
                 await db.execute(
                     text("UPDATE entities SET name_embedding = cast(:vec as vector) WHERE id = :eid"),
@@ -679,7 +728,7 @@ async def _generate_embeddings(
                 fact: KnowledgeFact | None = result.scalar_one_or_none()
                 if fact:
                     fact_text = f"{fact.predicate}: {fact.object_value}"
-                    vec = embed_text(fact_text)
+                    vec = embed_for_storage(fact_text)
                     db.add(
                         Embedding(
                             workspace_id=workspace_id,

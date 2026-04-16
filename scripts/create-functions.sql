@@ -64,9 +64,12 @@ fts_facts AS (
     SELECT kf.id AS fact_id,
            ROW_NUMBER() OVER (ORDER BY pgroonga_score(kf.tableoid, kf.ctid) DESC) AS rank_ix
     FROM knowledge_facts kf
+    JOIN entities e ON e.id = kf.entity_id
     WHERE kf.workspace_id = p_workspace_id
       AND kf.superseded_at IS NULL
-      AND (kf.object_value &@~ p_query_text OR kf.source_quote &@~ p_query_text)
+      AND (kf.object_value &@~ p_query_text
+           OR kf.source_quote &@~ p_query_text
+           OR e.name &@~ p_query_text)
     LIMIT p_match_count * 3
 ),
 combined AS (

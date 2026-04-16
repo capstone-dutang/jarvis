@@ -132,11 +132,15 @@ class Episode(Base):
     """Immutable conversation transcript chunk. Never updated or deleted."""
 
     __tablename__ = "episodes"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "content_hash", name="uq_episode_workspace_content"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     session_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False)
     workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)  # raw transcript
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
     metadata_: Mapped[dict[str, object] | None] = mapped_column("metadata", JSONB, nullable=True)
     processing_status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")  # pending/processing/done/failed
