@@ -1389,6 +1389,85 @@ Phase 1 구현 당시 PGroonga `&@~`가 AND 기본이라 자연어 쿼리에서 
 
 ---
 
+## 2026-04-19
+
+### 세션 개요
+전날 세션에서 "Phase 2로 hub entity 노이즈 수정"을 잠정 계획했지만, 사용자가 "hub 노이즈 개념 복잡하다 — 실제 트랜스크립트로 실측하자"로 방향 전환. 실측 기반 재설계가 이번 세션의 줄기.
+
+### 실측 시험 — 3개 질문으로 JARVIS의 진짜 실패 모드 규명
+AI(assistant)가 6개 에피소드 트랜스크립트 원본을 직접 읽고 조합해서 결론을 낼 수 있는 질문 3개 추출 → recall로 재구성 가능한지 검증.
+
+- **Q1** "예창패 아이템으로 SecondBrain vs Argos 선택 이유": recall이 단편 fact만 반환, 비교 판단 맥락 미복원
+- **Q2** "펀드메신저 커뮤니티 → SecondBrain B2B 진입 전략": 2,400명 → 인터뷰 → 레퍼런스 3단계 전체 못 꺼냄
+- **Q3** "아르고스 strength 모델 폐기 이유": **완전 off-topic** — Kovacevic DP, Qwen3-8B 같은 무관 fact 반환
+
+결정적 진단: Q3의 정답 fact(`strength.py deleted_in_redesign`)는 **DB에 존재**하는데 Phase 1 앵커 하드 필터가 차단. Argos 2-hop 이웃에 strength.py 엔티티 없음(Argos→Phase 4→strength.py는 3-hop).
+
+### Fragment 의미 검색으로 숨은 정답 확인
+앵커 필터 우회 직접 실험 — pgvector로 fragment 벡터 검색:
+- Q3 "strength 폐기" → `**삭제** | strength.py 전체 (6요인, 로지스틱 회귀...)` sim=0.67 (1등 반환)
+- Q1 "예창패 선택" → `아르고스는 예창패 아이템으로 부적합합니다` sim=0.68 (1등)
+- Q2 "펀드메신저 B2B" → `펀드메신저 2,400명 → 현직자 인터뷰 → 레퍼런스` sim=0.57 (2등)
+
+**결론**: 인프라는 이미 다 있다. Phase 1 앵커 필터가 의미상 관련된 passage를 **차단**하고 있었을 뿐. 임베딩 기반 fragment 검색은 정답을 정확히 찾는다.
+
+### 세 실험 동시 실행
+사용자 지시 "전부 실험해봐"로 3개 실험 병렬 진행 후 판정:
+- **실험 A (앵커 pool polyfill)**: 앵커 2-hop pool이 30 미만이면 broad search 보강. **발동 안 함** — 현재 데이터에선 pool이 항상 100으로 채워짐. **리버트**
+- **실험 B (fragment excerpt)**: `evidence.excerpt`를 episode 500자 대신 fragment.content로 교체. 즉각 품질 향상. **채택**
+- **실험 C (search_passages)**: 앵커 무시 fragment 의미 검색 신규 도구. Q1/Q2/Q3 모두 정답 상위 반환. **채택**
+
+실험 A 배제 → 문제는 "pool 크기"가 아니라 "pool 내부 랭킹". 이 데이터셋에서 앵커 pool은 충분히 크지만 그 안의 ordering이 issue.
+
+### 리서치 의뢰 — 두 건 원문 저장
+- **LLM 위키 리서치** (`2026-04-18-multi-project-retrieval-roadmap.md`): 9개 프로덕션 시스템 + MES-RAG/NodeRAG/HippoRAG 2 조사. 결론은 project_id 명시 태깅 업계 표준이지만 **JARVIS 비전 불일치로 전체 로드맵 배제**. A축(Aho-Corasick)만 반영
+- **Episodic + Semantic Hybrid Memory** (`2026-04-18-episodic-semantic-hybrid-memory.md`): Graphiti 완전 분해 + Mem0/Letta/LangMem 비교 + LongMemEval/HippoRAG 2 벤치. **핵심 결론**: "판단/결정/맥락 실종"은 이미 Graphiti가 풀어놓은 문제. 두 층 분리 + 양방향 역참조 + 2-stage API(`search_facts` + `get_episodes`)가 정답
+
+### 두 리서치 대조 후 JARVIS 현재 설계 평가
+JARVIS가 이미 맞게 가고 있던 부분:
+- ✅ Bi-temporal (valid_from/valid_to/superseded_at)
+- ✅ 3-way hybrid search
+- ✅ MMR 맥락 조립
+- ✅ 소프트 감쇠 (importance + half-life)
+- ✅ Fragment 의미 검색 (방금 커밋한 search_passages)
+
+**진짜 남은 3대 갭**:
+1. **get_episode_excerpt 부재** — Graphiti `get_episodes` 등가물이 없음. recall이 fact + episode_id 반환해도 excerpt는 500자뿐
+2. **Fact ↔ Episode M:N 없음** — 현재 1 fact = 1 episode FK. 같은 결정 반복 확인 시 confidence 누적 불가
+3. **Decision predicate 어휘 미정의** — `CHOSE_OVER`, `REJECTED`, `JUSTIFIED_BY` 같은 명시 predicate가 추출 가이드에 없음
+
+### get_episode_excerpt 구현 (가장 큰 효과)
+core/episode_excerpt.py 신규 — episode.content 런타임 청킹(문단 단위) + 쿼리 키워드 스코어링 + max_chars 예산 내 상위 문단 concat. 테이블 추가 없이 구현. 폴백 모드 "relevant_fallback_head"로 무매칭 안전 처리.
+
+MCP 도구 `jarvis_get_episode_excerpt` + REST `/episode-excerpt` 등록.
+
+### 실측 7개 질문 — 전부 통과
+- Q1 예창패 선택: SecondBrain vs Argos 비교 판단 **전체** 재구성 ✓
+- Q2 펀드메신저 B2B: 3단계 진입 전략 회수 ✓
+- Q3 strength 폐기: `strength.py 전체 삭제 + 11개 피처 재설계` 상세 회수 ✓
+- Q4 438KB 대형 에피소드 스트레스: Cerebras/트랜잭션/Layer 이슈 추출 ✓ (<1초)
+- Q5 무매칭 쿼리("스페인어 요리법 타이완"): relevant_fallback_head 폴백 ✓
+- Q6 full 모드 (max_chars=500, 398KB 에피소드): 정확히 500자 ✓
+- Q7 새 주제 "JARVIS 설계 철학": 코드 구조/OAuth/역할 맥락 회수 ✓
+
+토큰 경제: 19KB→2.5KB (87% 절감), 115KB→3KB (97% 절감).
+
+### 결론 — "AI가 판단/결정/맥락을 재구성"은 이제 됨
+사용자 비전의 4축:
+- 탐색(broad) = explore_topic ✅
+- 조회(specific) = recall_memory ✅
+- 이동(follow) = related_entities 힌트 ⚠️ (follow_relation 도구 미구현)
+- **심층(deep) = get_episode_excerpt ✅ 이번 세션에 완성**
+
+남은 작업은 품질 튜닝(decision predicate, fact_episodes M:N)이지 구조적 결함은 아님.
+
+### 메타: 리서치 관리 교훈
+이 세션에서 받은 리서치 2건 원본 저장을 사용자가 직접 물어봐서 비로소 인식. "앞으로 리서치는 받자마자 별도 파일로 저장"을 기본값으로 채택. research-notes.md는 요약/서사용, 원문은 `YYYY-MM-DD-*.md` 개별 파일로.
+
+또 한 가지: 실험 A처럼 "이 데이터에서 안 듣는 실험"은 **깔끔히 리버트**. 코드 남겨두면 혼란. 리서치가 권고했어도 현장에서 안 들으면 제거.
+
+---
+
 ## 아이디어 인덱스
 
 | # | 아이디어 | 발생 시점 | 기존 연구 |
