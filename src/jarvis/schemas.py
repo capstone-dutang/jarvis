@@ -85,6 +85,15 @@ class FactHistoryEntry(BaseModel):
     superseded_at: datetime | None = None
 
 
+class RelatedEntity(BaseModel):
+    """Fact's related entity with navigation hints."""
+
+    entity_id: uuid.UUID
+    name: str
+    relation_type: str
+    fact_count: int  # workspace-wide active fact count — "worth paging in?"
+
+
 class RecallFactResponse(BaseModel):
     entity: str
     predicate: str
@@ -92,13 +101,26 @@ class RecallFactResponse(BaseModel):
     grounded: bool
     valid_from: datetime
     evidence: EvidenceResponse
-    related_entities: list[str] = Field(default_factory=list)
+    related_entities: list[RelatedEntity] = Field(default_factory=list)
     history: list[FactHistoryEntry] = Field(default_factory=list)
     score: float
 
 
+class CoverageMetadata(BaseModel):
+    """Coverage metadata for recall context assembly."""
+
+    total_candidates: int
+    selected_count: int
+    communities_represented: int
+    workspace_communities: int
+
+
 class RecallMemoryResponse(BaseModel):
     results: list[RecallFactResponse]
+    coverage: CoverageMetadata | None = None
+    structural_summary: str = ""
+    pagination_token: str | None = None
+    anchor_matched: bool = False  # Phase 1: did Aho-Corasick find any anchor?
 
 
 # ── Initialize Memory ──
@@ -192,3 +214,34 @@ class ExtractGapsResponse(BaseModel):
     facts_extracted: int
     facts_stored: int
     supersedes: int
+
+
+# ── Explore Topic (topic map) ──
+
+
+class ExploreTopicRequest(BaseModel):
+    workspace_id: uuid.UUID
+    query: str = Field(..., min_length=1)
+
+
+class TopicEntity(BaseModel):
+    name: str
+    entity_type: str
+    fact_count_in_pool: int
+    workspace_fact_count: int
+    out_degree: int
+    community_id: int | None = None
+
+
+class TopicMapResponse(BaseModel):
+    query: str
+    expanded_terms: list[str]
+    total_candidates: int
+    total_fact_count: int
+    entities: list[TopicEntity]
+    distinct_communities: int
+    top_predicates: list[tuple[str, int]]
+    edge_count: int
+    isolated_entity_count: int
+    time_range_start: datetime | None = None
+    time_range_end: datetime | None = None

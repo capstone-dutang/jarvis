@@ -62,7 +62,7 @@ async def process_episode(db: AsyncSession, episode: Episode) -> None:
     # Research #4 decision logic already controls volume via recommendation
     # (skip/gap_fill/full_extract) and Stage 1-4 progressive filtering.
     gap_turns = [
-        {"index": g.turn.turn_index, "text": g.turn.text}
+        {"index": g.pair.user_turn.turn_index, "text": g.pair.pair_text}
         for g in gaps.gaps
     ]
 
@@ -170,6 +170,112 @@ async def process_episode(db: AsyncSession, episode: Episode) -> None:
         logger.info("Gap reconciliation: all NOOP for episode=%s", episode.id)
 
 
+async def _recompute_communities_all() -> None:
+    """Run Leiden community detection on all workspaces with entities.
+
+    Called after batch episode processing completes. Pre-computed community_id
+    assignments power recall's MMR diversity bonus.
+    """
+    from jarvis.core.context_assembly import recompute_communities
+
+    async with async_session_factory() as db:
+        ws_result = await db.execute(
+            select(Entity.workspace_id).distinct()
+        )
+        workspace_ids = [row[0] for row in ws_result.fetchall()]
+
+    for ws_id in workspace_ids:
+        try:
+            async with async_session_factory() as db:
+                count = await recompute_communities(db, ws_id)
+                logger.info("Leiden communities: workspace=%s, count=%d", ws_id, count)
+        except Exception:
+            logger.exception("Leiden failed for workspace=%s", ws_id)
+
+
+async def _backfill_fragment_embeddings() -> None:
+    """Backfill fragment embeddings for rows missing them (Section 8 dual-store).
+
+    Safe to run repeatedly — skips fragments already embedded. Called at batch
+    completion before HNSW reindex so vector_facts has something to search over.
+    """
+    from sqlalchemy import text as sa_text
+
+    from jarvis.core.embedding import embed_for_storage
+
+    async with async_session_factory() as db:
+        try:
+            result = await db.execute(
+                sa_text("""
+                    SELECT f.id, f.workspace_id, f.content
+                    FROM fragments f
+                    LEFT JOIN embeddings e
+                      ON e.source_type = 'fragment' AND e.source_id = f.id
+                    WHERE e.id IS NULL
+                    LIMIT 1000
+                """)
+            )
+            rows = result.fetchall()
+            if not rows:
+                return
+
+            inserted = 0
+            for frag_id, ws_id, content in rows:
+                try:
+                    vec = embed_for_storage(content)
+                    await db.execute(
+                        sa_text("""
+                            INSERT INTO embeddings
+                                (id, workspace_id, source_type, source_id, text_content, vector)
+                            VALUES
+                                (gen_random_uuid(), cast(:ws as uuid), 'fragment',
+                                 cast(:sid as uuid), :txt, cast(:vec as vector))
+                        """),
+                        {"ws": str(ws_id), "sid": str(frag_id), "txt": content, "vec": str(vec)},
+                    )
+                    inserted += 1
+                except Exception:
+                    logger.exception("Fragment embedding failed: id=%s", frag_id)
+            await db.commit()
+            logger.info("Fragment embedding backfill: %d/%d fragments", inserted, len(rows))
+        except Exception:
+            logger.exception("Fragment embedding backfill crashed")
+
+
+async def _cleanup_orphan_embeddings() -> None:
+    """Delete embeddings whose source row no longer exists.
+
+    Runs at batch completion, before fragment backfill and HNSW reindex, so the
+    indexes rebuilt afterward reflect only live data.
+    """
+    from sqlalchemy import text as sa_text
+
+    from jarvis.db import engine as async_engine
+
+    delete_stmts = {
+        "entity": "DELETE FROM embeddings WHERE source_type = 'entity' "
+                  "AND source_id NOT IN (SELECT id FROM entities)",
+        "fact": "DELETE FROM embeddings WHERE source_type = 'fact' "
+                "AND source_id NOT IN (SELECT id FROM knowledge_facts)",
+        "fragment": "DELETE FROM embeddings WHERE source_type = 'fragment' "
+                    "AND source_id NOT IN (SELECT id FROM fragments)",
+        "episode": "DELETE FROM embeddings WHERE source_type = 'episode' "
+                   "AND source_id NOT IN (SELECT id FROM episodes)",
+    }
+    try:
+        async with async_engine.connect() as conn:
+            await conn.execution_options(isolation_level="AUTOCOMMIT")
+            for source_type, stmt in delete_stmts.items():
+                try:
+                    res = await conn.execute(sa_text(stmt))
+                    if res.rowcount:
+                        logger.info("Orphan embeddings cleaned: %s → %d rows", source_type, res.rowcount)
+                except Exception:
+                    logger.exception("Orphan cleanup failed for source_type=%s", source_type)
+    except Exception:
+        logger.exception("Orphan cleanup connection failed")
+
+
 async def _reindex_hnsw() -> None:
     """Rebuild HNSW indexes after batch embedding insertions.
 
@@ -210,7 +316,10 @@ async def episode_worker() -> None:
 
                 if not episode:
                     if processed_since_last_reindex:
+                        await _cleanup_orphan_embeddings()
+                        await _backfill_fragment_embeddings()
                         await _reindex_hnsw()
+                        await _recompute_communities_all()
                         processed_since_last_reindex = False
                     await asyncio.sleep(POLL_INTERVAL)
                     continue

@@ -8,17 +8,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from jarvis.core.recall import recall_memory
 from jarvis.core.store import create_episode, get_or_create_session, store_memory
+from jarvis.core.topic_map import build_topic_map
 from jarvis.db import get_session
 from jarvis.models.tables import Entity, Episode, KnowledgeFact, Workspace
 from jarvis.schemas import (
     AnalyzeGapsRequest,
     AnalyzeGapsResponse,
+    ExploreTopicRequest,
     InitializeMemoryRequest,
     InitializeMemoryResponse,
     RecallMemoryRequest,
     RecallMemoryResponse,
     StoreMemoryRequest,
     StoreMemoryResponse,
+    TopicMapResponse,
     UploadTranscriptRequest,
     UploadTranscriptResponse,
 )
@@ -52,6 +55,14 @@ async def api_recall_memory(
     db: AsyncSession = Depends(get_session),
 ) -> RecallMemoryResponse:
     return await recall_memory(db, request)
+
+
+@router.post("/explore", response_model=TopicMapResponse)
+async def api_explore_topic(
+    request: ExploreTopicRequest,
+    db: AsyncSession = Depends(get_session),
+) -> TopicMapResponse:
+    return await build_topic_map(db, request.workspace_id, request.query)
 
 
 @router.post("/initialize", response_model=InitializeMemoryResponse)

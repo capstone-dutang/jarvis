@@ -178,9 +178,30 @@ class Entity(Base):
     # Direct embedding on entity table for fast Stage 2 vector lookup
     # Based on: research/multilingual-kg line 72
     name_embedding = mapped_column(Vector(384), nullable=True)
+    # Pre-computed Leiden community assignment. Used by recall MMR for diversity.
+    # Recomputed offline by worker after batch processing.
+    community_id: Mapped[int | None] = mapped_column(nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     workspace: Mapped["Workspace"] = relationship(back_populates="entities")
+
+
+class EntityAlias(Base):
+    __tablename__ = "entity_aliases"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "alias", name="uq_entity_aliases_ws_alias"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True,
+    )
+    entity_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("entities.id", ondelete="CASCADE"), nullable=False, index=True,
+    )
+    alias: Mapped[str] = mapped_column(String(255), nullable=False)
+    lang: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class KnowledgeFact(Base):
@@ -206,6 +227,9 @@ class KnowledgeFact(Base):
     valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_accessed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
 
     source_episode: Mapped["Episode"] = relationship(back_populates="facts")
 

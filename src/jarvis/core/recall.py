@@ -7,6 +7,7 @@ Falls back to Python-side search when SQL function is not available.
 
 import logging
 import uuid
+from datetime import datetime
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,7 +15,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from jarvis.config import settings
 from jarvis.models.tables import (
     Entity,
-    EntityRelation,
     Episode,
     KnowledgeFact,
     TrustLevel,
@@ -25,45 +25,56 @@ from jarvis.schemas import (
     RecallFactResponse,
     RecallMemoryRequest,
     RecallMemoryResponse,
+    RelatedEntity,
 )
 
 logger = logging.getLogger(__name__)
 
 
-async def _hybrid_search_sql(
+async def hybrid_search_sql(
     db: AsyncSession,
     workspace_id: uuid.UUID,
-    query: str,
+    query_text: str,
+    fts_query: str,
     query_vector: list[float],
     seed_ids: list[uuid.UUID],
+    anchor_entity_ids: list[uuid.UUID],
     limit: int,
-) -> list[tuple[uuid.UUID, uuid.UUID, str, str, str, float, str]]:
+    anchor_hop_depth: int = 2,
+) -> list[tuple[uuid.UUID, uuid.UUID, str, str, str, float, str, float | None, str | None, datetime | None]]:
     """Call hybrid_graph_search SQL function for single-query RRF.
 
-    Returns: list of (fact_id, entity_id, entity_name, predicate, object_value, rrf_score, sources)
+    Returns rows of (fact_id, entity_id, entity_name, predicate, object_value,
+    rrf_score, sources, importance, fragment_type, last_accessed_at).
+    When anchor_entity_ids is empty, the SQL function falls back to broad search.
     """
-    # SQLAlchemy text() + asyncpg: uuid[] binding requires building the
-    # array literal as a string since asyncpg's text() path can't infer
-    # the uuid[] type from Python lists. Vector uses cast() as before.
     seed_literal = (
         "ARRAY[" + ",".join(f"'{s}'::uuid" for s in seed_ids) + "]"
         if seed_ids
         else "'{}'::uuid[]"
     )
+    anchor_literal = (
+        "ARRAY[" + ",".join(f"'{a}'::uuid" for a in anchor_entity_ids) + "]"
+        if anchor_entity_ids
+        else "'{}'::uuid[]"
+    )
     sql = f"""
-        SELECT fact_id, entity_id, entity_name, predicate, object_value, rrf_score, sources
+        SELECT fact_id, entity_id, entity_name, predicate, object_value, rrf_score, sources,
+               importance, fragment_type, last_accessed_at
         FROM hybrid_graph_search(
-            cast(:ws as uuid), :query, cast(:vec as vector), {seed_literal},
-            :lim, 1.0, 1.0, 0.5, 2, :rrf_k
+            cast(:ws as uuid), :query, :fts, cast(:vec as vector), {seed_literal}, {anchor_literal},
+            :lim, 1.0, 1.0, 0.5, 2, :anchor_hop, :rrf_k
         )
     """
     result = await db.execute(
         text(sql),
         {
             "ws": str(workspace_id),
-            "query": query,
+            "query": query_text,
+            "fts": fts_query,
             "vec": str(query_vector),
             "lim": limit,
+            "anchor_hop": anchor_hop_depth,
             "rrf_k": settings.search_rrf_k,
         },
     )
@@ -119,10 +130,25 @@ async def _build_fact_response(
     entity_result = await db.execute(select(Entity).where(Entity.id == fact.entity_id))
     entity = entity_result.scalar_one()
 
-    # Get episode excerpt
-    episode_result = await db.execute(select(Episode).where(Episode.id == fact.source_episode_id))
-    episode = episode_result.scalar_one()
-    excerpt = episode.content[:500] if len(episode.content) > 500 else episode.content
+    # Excerpt: prefer fragment.content (natural-language passage) over episode content.
+    # Episode content is 100KB+ of raw transcript; fragment is the curated passage
+    # linked to this fact. Fall back to episode if no fragment linked.
+    frag_result = await db.execute(
+        text("""
+            SELECT content FROM fragments
+            WHERE source_fact_id = :fid
+            ORDER BY created_at DESC
+            LIMIT 1
+        """),
+        {"fid": str(fact.id)},
+    )
+    frag_row = frag_result.fetchone()
+    if frag_row:
+        excerpt = frag_row[0][:1000] if len(frag_row[0]) > 1000 else frag_row[0]
+    else:
+        episode_result = await db.execute(select(Episode).where(Episode.id == fact.source_episode_id))
+        episode = episode_result.scalar_one()
+        excerpt = episode.content[:500] if len(episode.content) > 500 else episode.content
 
     # Get history (other facts with same entity + predicate)
     history_result = await db.execute(
@@ -144,16 +170,26 @@ async def _build_fact_response(
         for h in history_facts
     ]
 
-    # Get related entities via relations
+    # Related entities: name + relation_type + fact_count (navigation hints)
     rel_result = await db.execute(
-        select(Entity.name)
-        .join(EntityRelation, EntityRelation.to_entity_id == Entity.id)
-        .where(
-            EntityRelation.from_entity_id == fact.entity_id,
-            EntityRelation.valid_to.is_(None),
-        )
+        text("""
+            SELECT e.id, e.name, r.relation_type::text,
+                   (SELECT COUNT(*) FROM knowledge_facts kf2
+                    WHERE kf2.entity_id = e.id AND kf2.superseded_at IS NULL) AS fact_count
+            FROM entity_relations r
+            JOIN entities e ON e.id = r.to_entity_id
+            WHERE r.from_entity_id = :from_id
+              AND (r.valid_to IS NULL OR r.valid_to > now())
+        """),
+        {"from_id": str(fact.entity_id)},
     )
-    related = [row[0] for row in rel_result.fetchall()]
+    related = [
+        RelatedEntity(
+            entity_id=row[0], name=row[1],
+            relation_type=row[2], fact_count=int(row[3]),
+        )
+        for row in rel_result.fetchall()
+    ]
 
     return RecallFactResponse(
         entity=entity.name,
@@ -172,7 +208,7 @@ async def _build_fact_response(
     )
 
 
-async def _extract_query_entities(
+async def extract_query_entities(
     db: AsyncSession,
     workspace_id: uuid.UUID,
     query_vector: list[float],
@@ -202,40 +238,124 @@ async def _extract_query_entities(
         return []
 
 
+# Stage 1 candidate pool size. Research: LIMIT 100.
+# request.limit is the final cap after MMR selection, not the Stage 1 pool size.
+STAGE1_POOL_SIZE = 100
+
+
 async def recall_memory(db: AsyncSession, request: RecallMemoryRequest) -> RecallMemoryResponse:
-    """Full recall pipeline: single SQL function call for hybrid search.
+    """Full recall pipeline: hybrid search → MMR context assembly.
 
     1. Embed query
     2. Extract seed entities for graph expansion
-    3. Call hybrid_graph_search SQL function (vector + FTS + graph → RRF)
-    4. Build full fact responses with evidence and history
+    3. Call hybrid_graph_search SQL function (vector + FTS + graph → RRF) — pool=100
+    4. MMR re-rank with community awareness + adaptive K
+    5. Build full fact responses with evidence and history
     """
-    # Embed query
+    from jarvis.core.context_assembly import FactCandidate, assemble_context
+    from jarvis.core.query_preprocessing import preprocess_query_with_anchors
+
+    # Preprocess + Aho-Corasick anchor extraction (Phase 1 entity-anchored retrieval)
+    preprocessed = await preprocess_query_with_anchors(
+        db, request.workspace_id, request.query,
+    )
+    logger.info(
+        "Query expanded: %r → %s (fts=%r, anchors=%d)",
+        request.query, preprocessed.expanded_terms, preprocessed.fts_query,
+        len(preprocessed.anchor_entity_ids),
+    )
+
+    # Embed query (use normalized form)
     query_vector: list[float] = []
     try:
         from jarvis.core.embedding import embed_text
 
-        query_vector = embed_text(request.query)
+        query_vector = embed_text(preprocessed.normalized)
     except Exception:
-        pass
+        logger.exception("Query embedding failed for '%s'", request.query[:50])
 
-    # Extract seed entities for graph expansion
-    seed_ids = await _extract_query_entities(db, request.workspace_id, query_vector)
+    # Seed = Aho-Corasick anchors ∪ cosine top-3 (user decision: always merge both)
+    cosine_seeds = await extract_query_entities(db, request.workspace_id, query_vector)
+    seed_ids = list(dict.fromkeys(preprocessed.anchor_entity_ids + cosine_seeds))
     if seed_ids:
-        logger.info("Seed entities: %s for query '%s'", seed_ids, request.query[:50])
+        logger.info(
+            "Seeds: anchors=%d + cosine=%d → merged=%d",
+            len(preprocessed.anchor_entity_ids), len(cosine_seeds), len(seed_ids),
+        )
 
-    # Try SQL function first (1 DB round-trip)
+    # Stage 1: Hybrid search with fixed pool size (research: LIMIT 100)
     results: list[RecallFactResponse] = []
     try:
-        rows = await _hybrid_search_sql(db, request.workspace_id, request.query, query_vector, seed_ids, request.limit)
-        for row in rows:
-            fact_id, entity_id, entity_name, predicate, object_value, rrf_score, sources = row
-            fact_result = await db.execute(select(KnowledgeFact).where(KnowledgeFact.id == fact_id))
+        # pgvector 0.8 iterative_scan — ensures HNSW + WHERE filter returns
+        # k results even when the filter discards many candidates. SET LOCAL
+        # scopes to this transaction, applied to the hybrid_graph_search call.
+        await db.execute(text("SET LOCAL hnsw.iterative_scan = 'strict_order'"))
+        rows = await hybrid_search_sql(
+            db, request.workspace_id,
+            query_text=preprocessed.normalized,
+            fts_query=preprocessed.fts_query,
+            query_vector=query_vector,
+            seed_ids=seed_ids,
+            anchor_entity_ids=preprocessed.anchor_entity_ids,
+            limit=STAGE1_POOL_SIZE,
+        )
+        logger.info("Hybrid search: %d candidates for '%s'", len(rows), request.query[:50])
+
+        # Build FactCandidate list for MMR
+        candidates = [
+            FactCandidate(
+                fact_id=row[0],
+                entity_id=row[1],
+                entity_name=row[2],
+                predicate=row[3],
+                object_value=row[4],
+                rrf_score=float(row[5]),
+                importance=float(row[7]) if row[7] is not None else 0.5,
+                fragment_type=row[8] if row[8] is not None else "fact",
+                last_accessed_at=row[9],
+            )
+            for row in rows
+        ]
+
+        # Stage 2: MMR context assembly
+        assembly = await assemble_context(
+            db, request.workspace_id, candidates, limit=request.limit,
+        )
+
+        # Refresh last_accessed_at for facts we actually returned. MMR-selected
+        # facts are the ones the user will see, so they reset the decay clock.
+        fact_ids_accessed = [c.fact_id for c in assembly.selected]
+        if fact_ids_accessed:
+            try:
+                id_literal = (
+                    "ARRAY[" + ",".join(f"'{fid}'::uuid" for fid in fact_ids_accessed) + "]"
+                )
+                await db.execute(
+                    text(
+                        f"UPDATE knowledge_facts SET last_accessed_at = now() "
+                        f"WHERE id = ANY({id_literal})"  # noqa: S608
+                    )
+                )
+                await db.commit()
+            except Exception:
+                logger.exception("last_accessed_at update failed (non-fatal)")
+                await db.rollback()
+
+        # Build full fact responses for selected candidates
+        for cand in assembly.selected:
+            fact_result = await db.execute(select(KnowledgeFact).where(KnowledgeFact.id == cand.fact_id))
             fact: KnowledgeFact | None = fact_result.scalar_one_or_none()
             if fact:
-                resp = await _build_fact_response(db, fact, float(rrf_score))
+                resp = await _build_fact_response(db, fact, cand.rrf_score)
                 results.append(resp)
-        logger.info("Hybrid search: %d results for '%s'", len(results), request.query[:50])
+
+        return RecallMemoryResponse(
+            results=results,
+            coverage=assembly.coverage,
+            structural_summary=assembly.structural_summary,
+            pagination_token="more_available" if assembly.has_more else None,
+            anchor_matched=bool(preprocessed.anchor_entity_ids),
+        )
     except Exception:
         # Rollback aborted transaction before fallback
         await db.rollback()
@@ -249,4 +369,7 @@ async def recall_memory(db: AsyncSession, request: RecallMemoryRequest) -> Recal
                 results.append(resp)
         logger.info("Fallback search: %d results for '%s'", len(results), request.query[:50])
 
-    return RecallMemoryResponse(results=results)
+    return RecallMemoryResponse(
+        results=results,
+        anchor_matched=bool(preprocessed.anchor_entity_ids),
+    )

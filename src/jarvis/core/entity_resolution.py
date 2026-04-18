@@ -34,10 +34,23 @@ ALIAS_DICT: dict[str, str] = {
     "oci": "oracle cloud infrastructure",
 }
 
+# Cross-lingual project/domain aliases (Korean ↔ English).
+# Only add pairs actually observed in the data.
+CROSS_LINGUAL_ALIASES: dict[str, str] = {
+    "자비스": "JARVIS",
+    "세컨드브레인": "SecondBrain",
+    "아르고스": "Argos",
+    "펀드메신저": "fundmessenger",
+}
+
 
 def normalize_name(name: str) -> str:
     """Stage 1: Unicode NFKC normalization + lowercase + alias lookup."""
-    normalized = unicodedata.normalize("NFKC", name.strip()).lower()
+    # Cross-lingual alias lookup (result is lowercased for Stage 1 match)
+    original = unicodedata.normalize("NFKC", name.strip())
+    if original in CROSS_LINGUAL_ALIASES:
+        return CROSS_LINGUAL_ALIASES[original].lower()
+    normalized = original.lower()
     return ALIAS_DICT.get(normalized, normalized)
 
 

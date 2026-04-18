@@ -13,6 +13,7 @@ from sqlalchemy import select
 
 from jarvis.core.recall import recall_memory as _recall
 from jarvis.core.store import store_memory as _store
+from jarvis.core.topic_map import build_topic_map as _build_topic_map
 from jarvis.db import async_session_factory
 from jarvis.models.tables import Entity, KnowledgeFact, Workspace
 from jarvis.schemas import (
@@ -35,7 +36,9 @@ mcp = FastMCP(
     instructions=(
         "JARVIS is a cloud memory server. Use manage_workspace to create or switch workspaces. "
         "Use initialize_memory at the start of each conversation to load context. "
-        "Use store_memory whenever you learn new facts. Use recall_memory to retrieve past context."
+        "Use store_memory whenever you learn new facts. "
+        "For unfamiliar topics, call explore_topic first to map the landscape, "
+        "then call recall_memory with a narrower query for specific details."
     ),
 )
 
@@ -314,15 +317,37 @@ async def recall_memory(
         if not result.results:
             return "No relevant memories found."
 
+        # Build metadata header (v1: structural_summary + coverage)
+        header_lines: list[str] = []
+        if result.structural_summary:
+            header_lines.append(result.structural_summary)
+        header = "\n".join(header_lines)
+
         lines: list[str] = []
+        if result.anchor_matched:
+            lines.append("[anchor-matched: query resolved to specific entities]")
+        else:
+            lines.append("[broad search: no anchor entity matched]")
+
         for r in result.results:
             grounded_tag = " [grounded]" if r.grounded else " [low_trust]"
             lines.append(f"- {r.entity} {r.predicate} {r.object_value}{grounded_tag} (since {r.valid_from.date()})")
+            if r.related_entities:
+                rel_repr = ", ".join(
+                    f"{rel.name}[{rel.relation_type}, {rel.fact_count}f]"
+                    for rel in r.related_entities[:5]
+                )
+                lines.append(f"  related: {rel_repr}")
             if r.history:
                 for h in r.history:
                     lines.append(f"  (was: {h.object_value}, until {h.superseded_at})")
 
-        response = "\n".join(lines)
+        body = "\n".join(lines)
+        footer = ""
+        if result.pagination_token == "more_available":
+            footer = "\n\n[More facts available — narrow query for specifics.]"
+
+        response = f"{header}\n\n{body}{footer}" if header else f"{body}{footer}"
 
         if len(response) > MAX_RESPONSE_CHARS:
             response = (
@@ -332,3 +357,72 @@ async def recall_memory(
         return response
     except Exception as e:
         return f"Failed to recall memory: {e}. Check that workspace exists. Try a shorter or more specific query."
+
+
+# ── Tool 5: Explore Topic (structural map, no fact details) ──
+
+
+@mcp.tool(name="jarvis_explore_topic")
+async def explore_topic(workspace: str, query: str) -> str:
+    """Get a structural map of a topic before diving into details.
+
+    Use this when: you need to explore a topic you're unfamiliar with — it
+    returns entities, community tags, and predicate distribution without fact
+    details, so you can scan the landscape cheaply. Then call recall_memory
+    with a narrower query for the specific entities/predicates you care about.
+
+    Do NOT use this when: you already know the entity name and want its facts
+    (call recall_memory directly), or for trivial lookups.
+
+    Args:
+        workspace: Workspace name (or UUID)
+        query: Natural language query describing the topic to explore
+    """
+    try:
+        ws_id = await _resolve_workspace(workspace)
+
+        async with async_session_factory() as db:
+            topic_map = await _build_topic_map(db, ws_id, query)
+
+        if topic_map.total_candidates == 0:
+            return f"No entities found for topic '{query}'. Try a broader query."
+
+        lines: list[str] = []
+        expanded_repr = ", ".join(topic_map.expanded_terms) if topic_map.expanded_terms else query
+        lines.append(f'Topic map for "{query}" (expanded: {expanded_repr})')
+        lines.append(
+            f"Pool: {topic_map.total_candidates} candidates, "
+            f"{topic_map.distinct_communities} distinct communities, "
+            f"{topic_map.isolated_entity_count} entities isolated"
+        )
+
+        lines.append(f"\nTop entities ({len(topic_map.entities)}):")
+        for e in topic_map.entities:
+            comm = f"comm={e.community_id}" if e.community_id is not None else "comm=none"
+            lines.append(
+                f"  - {e.name} [{e.entity_type}, {comm}] "
+                f"pool_facts={e.fact_count_in_pool}, ws_facts={e.workspace_fact_count}, "
+                f"out_degree={e.out_degree}"
+            )
+
+        if topic_map.top_predicates:
+            pred_repr = ", ".join(f"{p} ({c})" for p, c in topic_map.top_predicates)
+            lines.append(f"\nTop predicates in pool:\n  {pred_repr}")
+
+        if topic_map.time_range_start and topic_map.time_range_end:
+            lines.append(
+                f"\nTime range: {topic_map.time_range_start:%Y-%m-%d %H:%M} "
+                f"→ {topic_map.time_range_end:%Y-%m-%d %H:%M}"
+            )
+        lines.append(f"Edges between top entities: {topic_map.edge_count}")
+
+        lines.append(
+            "\nNext: call recall_memory with a specific entity or predicate for details."
+        )
+
+        response = "\n".join(lines)
+        if len(response) > MAX_RESPONSE_CHARS:
+            response = response[:MAX_RESPONSE_CHARS] + "\n\n[Truncated.]"
+        return response
+    except Exception as e:
+        return f"Failed to explore topic: {e}. Check that workspace exists."

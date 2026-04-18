@@ -216,6 +216,11 @@ async def resolve_entity(
     db.add(entity)
     await db.flush()
 
+    # Anchor automaton caches entity names — invalidate so the next recall
+    # rebuilds it with this new entity included.
+    from jarvis.core.anchor_matching import invalidate as _invalidate_anchor_cache
+    _invalidate_anchor_cache(workspace_id)
+
     # Synchronous name_embedding — ensures next resolve_entity() Stage 2 finds this entity.
     # Embedding table entry is created asynchronously by _generate_embeddings() (different purpose: recall search).
     try:
@@ -477,16 +482,36 @@ async def store_fact(
     db.add(new_fact)
     await db.flush()
 
-    # Create Fragment (dual store: KnowledgeFact + Fragment)
-    fragment_content = f"{entity.name} {resolved_predicate} {fact_hint.object}"
+    # Create Fragment (dual store: KnowledgeFact + Fragment).
+    # source_quote carries the natural-language context — prefer it over the
+    # triple when it's a meaningful length. Fallback to triple for sparse hints.
+    from jarvis.core.query_preprocessing import extract_keywords
+
+    if fact_hint.source_quote and len(fact_hint.source_quote.strip()) >= 10:
+        fragment_content = fact_hint.source_quote.strip()
+    else:
+        fragment_content = f"{entity.name} {resolved_predicate} {fact_hint.object}"
     if len(fragment_content) > 500:
         fragment_content = fragment_content[:497] + "..."
+
+    # Keywords: entity + predicate + object + tokens extracted from fragment content.
+    content_keywords = extract_keywords(fragment_content)
+    base_keywords = [entity.name, resolved_predicate, fact_hint.object]
+    fragment_keywords: list[str] = []
+    seen_keywords: set[str] = set()
+    for kw in base_keywords + content_keywords:
+        k_lower = kw.lower()
+        if k_lower and k_lower not in seen_keywords:
+            seen_keywords.add(k_lower)
+            fragment_keywords.append(kw)
+        if len(fragment_keywords) >= 20:
+            break
 
     fragment = Fragment(
         workspace_id=workspace_id,
         content=fragment_content,
         fragment_type=_classify_fragment_type(resolved_predicate),
-        keywords=[entity.name, resolved_predicate],
+        keywords=fragment_keywords,
         importance=0.7 if trust == TrustLevel.grounded else 0.4,
         source_episode_id=episode.id,
         source_fact_id=new_fact.id,
@@ -735,6 +760,24 @@ async def _generate_embeddings(
                             source_type="fact",
                             source_id=fact.id,
                             text_content=fact_text,
+                            vector=vec,
+                        )
+                    )
+
+            # Embed fragments — Section 8 dual-store: semantic search goes
+            # through fragments (natural-language source_quote), not fact triples.
+            if fact_ids:
+                frag_result = await db.execute(
+                    select(Fragment).where(Fragment.source_fact_id.in_(fact_ids))
+                )
+                for frag in frag_result.scalars().all():
+                    vec = embed_for_storage(frag.content)
+                    db.add(
+                        Embedding(
+                            workspace_id=workspace_id,
+                            source_type="fragment",
+                            source_id=frag.id,
+                            text_content=frag.content,
                             vector=vec,
                         )
                     )
