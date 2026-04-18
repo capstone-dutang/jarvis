@@ -245,3 +245,27 @@ class TopicMapResponse(BaseModel):
     isolated_entity_count: int
     time_range_start: datetime | None = None
     time_range_end: datetime | None = None
+
+
+# ── Search Passages (narrative/episodic layer) ──
+
+
+class SearchPassagesRequest(BaseModel):
+    workspace_id: uuid.UUID
+    query: str = Field(..., min_length=1)
+    limit: int = Field(default=10, ge=1, le=50)
+
+
+class PassageHitResponse(BaseModel):
+    fragment_id: uuid.UUID
+    content: str
+    similarity: float
+    episode_id: uuid.UUID
+    fact_id: uuid.UUID | None = None
+    entity_name: str | None = None
+    predicate: str | None = None
+
+
+class SearchPassagesResponse(BaseModel):
+    query: str
+    results: list[PassageHitResponse]

@@ -11,6 +11,7 @@ import uuid
 from mcp.server.fastmcp import FastMCP
 from sqlalchemy import select
 
+from jarvis.core.passage_search import search_passages as _search_passages
 from jarvis.core.recall import recall_memory as _recall
 from jarvis.core.store import store_memory as _store
 from jarvis.core.topic_map import build_topic_map as _build_topic_map
@@ -426,3 +427,47 @@ async def explore_topic(workspace: str, query: str) -> str:
         return response
     except Exception as e:
         return f"Failed to explore topic: {e}. Check that workspace exists."
+
+
+# ── Tool 6: Search Passages (narrative/episodic layer) ──
+
+
+@mcp.tool(name="jarvis_search_passages")
+async def search_passages_tool(workspace: str, query: str, limit: int = 10) -> str:
+    """Semantic search over raw conversation passages — bypasses anchor filter.
+
+    Use this when: recall_memory returns structured facts but you need the
+    "why/decision/reasoning" behind them. Returns natural-language passages
+    ranked by semantic similarity with links back to episode and fact.
+
+    Do NOT use this as a default — recall_memory is cheaper and returns
+    structured facts. Fall back to this when recall misses narrative context.
+
+    Args:
+        workspace: Workspace name (or UUID)
+        query: Natural language query for the reasoning/decision you want
+        limit: Max passages to return (1-50)
+    """
+    try:
+        ws_id = await _resolve_workspace(workspace)
+        async with async_session_factory() as db:
+            hits = await _search_passages(db, ws_id, query, limit=limit)
+        if not hits:
+            return f"No passages found for '{query}'."
+
+        lines = [f"Passages for '{query}' (ranked by semantic similarity):"]
+        for i, h in enumerate(hits, 1):
+            link = ""
+            if h.entity_name and h.predicate:
+                link = f" [{h.entity_name} {h.predicate}]"
+            ep_short = str(h.episode_id)[:8]
+            content = h.content if len(h.content) <= 400 else h.content[:400] + "..."
+            lines.append(f"\n{i}. sim={h.similarity:.3f}{link} (ep={ep_short})")
+            lines.append(f"   {content}")
+
+        response = "\n".join(lines)
+        if len(response) > MAX_RESPONSE_CHARS:
+            response = response[:MAX_RESPONSE_CHARS] + "\n\n[Truncated.]"
+        return response
+    except Exception as e:
+        return f"Failed to search passages: {e}."

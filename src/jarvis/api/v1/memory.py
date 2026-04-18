@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from jarvis.core.passage_search import search_passages
 from jarvis.core.recall import recall_memory
 from jarvis.core.store import create_episode, get_or_create_session, store_memory
 from jarvis.core.topic_map import build_topic_map
@@ -17,8 +18,11 @@ from jarvis.schemas import (
     ExploreTopicRequest,
     InitializeMemoryRequest,
     InitializeMemoryResponse,
+    PassageHitResponse,
     RecallMemoryRequest,
     RecallMemoryResponse,
+    SearchPassagesRequest,
+    SearchPassagesResponse,
     StoreMemoryRequest,
     StoreMemoryResponse,
     TopicMapResponse,
@@ -63,6 +67,29 @@ async def api_explore_topic(
     db: AsyncSession = Depends(get_session),
 ) -> TopicMapResponse:
     return await build_topic_map(db, request.workspace_id, request.query)
+
+
+@router.post("/search-passages", response_model=SearchPassagesResponse)
+async def api_search_passages(
+    request: SearchPassagesRequest,
+    db: AsyncSession = Depends(get_session),
+) -> SearchPassagesResponse:
+    hits = await search_passages(db, request.workspace_id, request.query, request.limit)
+    return SearchPassagesResponse(
+        query=request.query,
+        results=[
+            PassageHitResponse(
+                fragment_id=h.fragment_id,
+                content=h.content,
+                similarity=h.similarity,
+                episode_id=h.episode_id,
+                fact_id=h.fact_id,
+                entity_name=h.entity_name,
+                predicate=h.predicate,
+            )
+            for h in hits
+        ],
+    )
 
 
 @router.post("/initialize", response_model=InitializeMemoryResponse)
