@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import HTTPException
 
 from jarvis.core.episode_excerpt import get_episode_excerpt
+from jarvis.core.follow_relation import follow_relation
 from jarvis.core.passage_search import search_passages
 from jarvis.core.recall import recall_memory
 from jarvis.core.store import create_episode, get_or_create_session, store_memory
@@ -21,11 +22,15 @@ from jarvis.schemas import (
     EpisodeExcerptRequest,
     EpisodeExcerptResponse,
     ExploreTopicRequest,
+    FactBriefResponse,
+    FollowRelationRequest,
+    FollowRelationResponse,
     InitializeMemoryRequest,
     InitializeMemoryResponse,
     PassageHitResponse,
     RecallMemoryRequest,
     RecallMemoryResponse,
+    RelatedNodeResponse,
     SearchPassagesRequest,
     SearchPassagesResponse,
     StoreMemoryRequest,
@@ -117,6 +122,50 @@ async def api_episode_excerpt(
         matched_keywords=result.matched_keywords,
         created_at=result.created_at,
         summary=result.summary,
+    )
+
+
+@router.post("/follow-relation", response_model=FollowRelationResponse)
+async def api_follow_relation(
+    request: FollowRelationRequest,
+    db: AsyncSession = Depends(get_session),
+) -> FollowRelationResponse:
+    result = await follow_relation(
+        db, request.workspace_id, request.entity,
+        direction=request.direction,
+        relation_type=request.relation_type,
+        limit=request.limit,
+    )
+    if result is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Entity '{request.entity}' not found in workspace",
+        )
+    return FollowRelationResponse(
+        anchor_entity_id=result.anchor_entity_id,
+        anchor_entity_name=result.anchor_entity_name,
+        total_neighbors=result.total_neighbors,
+        neighbors=[
+            RelatedNodeResponse(
+                entity_id=n.entity_id,
+                entity_name=n.entity_name,
+                entity_type=n.entity_type,
+                relation_type=n.relation_type,
+                direction=n.direction,
+                fact_count=n.fact_count,
+                top_facts=[
+                    FactBriefResponse(
+                        predicate=f.predicate,
+                        object_value=f.object_value,
+                        grounded=f.grounded,
+                        valid_from=f.valid_from,
+                    )
+                    for f in n.top_facts
+                ],
+            )
+            for n in result.neighbors
+        ],
+        relation_type_counts=result.relation_type_counts,
     )
 
 

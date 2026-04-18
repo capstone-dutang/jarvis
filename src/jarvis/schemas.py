@@ -291,3 +291,39 @@ class EpisodeExcerptResponse(BaseModel):
     matched_keywords: list[str] = Field(default_factory=list)
     created_at: datetime
     summary: str | None = None
+
+
+# ── Follow Relation (graph navigation) ──
+
+
+class FollowRelationRequest(BaseModel):
+    workspace_id: uuid.UUID
+    entity: str = Field(..., min_length=1)  # UUID or exact entity name
+    direction: str = Field(default="both", pattern="^(out|in|both)$")
+    relation_type: str | None = None
+    limit: int = Field(default=10, ge=1, le=50)
+
+
+class FactBriefResponse(BaseModel):
+    predicate: str
+    object_value: str
+    grounded: bool
+    valid_from: datetime
+
+
+class RelatedNodeResponse(BaseModel):
+    entity_id: uuid.UUID
+    entity_name: str
+    entity_type: str | None = None
+    relation_type: str
+    direction: str  # "out" | "in"
+    fact_count: int
+    top_facts: list[FactBriefResponse] = Field(default_factory=list)
+
+
+class FollowRelationResponse(BaseModel):
+    anchor_entity_id: uuid.UUID
+    anchor_entity_name: str
+    total_neighbors: int
+    neighbors: list[RelatedNodeResponse]
+    relation_type_counts: dict[str, int] = Field(default_factory=dict)

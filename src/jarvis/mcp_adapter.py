@@ -12,6 +12,7 @@ from mcp.server.fastmcp import FastMCP
 from sqlalchemy import select
 
 from jarvis.core.episode_excerpt import get_episode_excerpt as _get_episode_excerpt
+from jarvis.core.follow_relation import follow_relation as _follow_relation
 from jarvis.core.passage_search import search_passages as _search_passages
 from jarvis.core.recall import recall_memory as _recall
 from jarvis.core.store import store_memory as _store
@@ -236,6 +237,41 @@ async def store_memory(
     Do NOT store: greetings, small talk, information already stored, or your
     own responses. Also call this if 5+ substantive exchanges have passed
     without storing. Each memory should be a self-contained statement.
+
+    PREDICATE VOCABULARY (extraction guide):
+
+    Capture STATE facts (default):
+      - has_X, uses_X, targets_X, depends_on, runs_on, requires — current state
+      - Example: (SecondBrain, has_profit_margin_rate, 86%)
+
+    Capture DECISIONS with explicit predicates so future recall can find the
+    "why" — these are the predicates that tell JARVIS "this is a judgment":
+      - CHOSE_OVER(A, B)        — "we picked A over B" (put the comparison in object)
+      - DECIDED_FOR(agent, X)   — commitment to X
+      - REJECTED(agent, X)      — ruled out X
+      - PREFERRED_OVER(A, B)    — A ranks higher than B
+      - JUSTIFIED_BY(X, reason) — X is justified by the stated reason
+      - MOTIVATED_BY(action, factor)
+      - COMPARED_WITH(A, B)     — compared but didn't decide yet
+      - CONSIDERED(agent, X)    — brought X into consideration
+      - DEPRECATED(X)           — X is being phased out
+      - REPLACED_BY(old, new)   — explicit replacement
+      - INVALIDATED_BY(fact, reason)
+
+    Use UPPERCASE_SNAKE for decision predicates (distinguishes them from
+    lowercase state predicates). The subject should be the decision-maker or
+    the decided thing; the object should carry the contrast (e.g., for
+    CHOSE_OVER put the rejected alternative in `object`). When possible also
+    emit a paired JUSTIFIED_BY fact so the reason is searchable.
+
+    Example — "예창패 아이템으로 Argos가 아니라 SecondBrain을 선택":
+      (SecondBrain, CHOSEN_OVER, Argos)
+      (SecondBrain, JUSTIFIED_BY, "clear B2B market / 86% margin / 심사위원 호감도")
+      (Argos, REJECTED, "cryptocurrency trading faces 심사위원 거부감")
+
+    This vocabulary makes recall_memory(predicate_filter=["CHOSE_OVER",
+    "JUSTIFIED_BY"]) possible in future versions, and even without filters
+    these uppercase predicates cluster neatly in search results.
 
     Args:
         workspace: Workspace name (or UUID)
@@ -534,3 +570,76 @@ async def get_episode_excerpt_tool(
         return response
     except Exception as e:
         return f"Failed to get episode excerpt: {e}."
+
+
+# ── Tool 8: Follow Relation (1-hop graph walk) ──
+
+
+@mcp.tool(name="jarvis_follow_relation")
+async def follow_relation_tool(
+    workspace: str,
+    entity: str,
+    direction: str = "both",
+    relation_type: str = "",
+    limit: int = 10,
+) -> str:
+    """Walk one hop from an entity to see its direct neighbors with top facts.
+
+    Use this when recall_memory surfaced an entity and you want to navigate
+    the graph — find related entities, see what relations they have, and
+    drill into them. Returns neighbors grouped by relation_type with a
+    3-fact snapshot per neighbor so you can decide where to step next.
+
+    Do NOT use as a default search (use recall_memory). Use this AFTER you
+    have a specific entity and want to explore its neighborhood.
+
+    Args:
+        workspace: Workspace name or UUID
+        entity: Entity name (exact) or UUID to anchor the walk
+        direction: "out" (self→other), "in" (other→self), "both" (default)
+        relation_type: Filter to one relation type (e.g. "related_to"),
+                       or empty string for all types
+        limit: Max neighbors to return (1-50, default 10)
+    """
+    try:
+        ws_id = await _resolve_workspace(workspace)
+        rtype: str | None = relation_type.strip() if relation_type and relation_type.strip() else None
+        async with async_session_factory() as db:
+            result = await _follow_relation(
+                db, ws_id, entity,
+                direction=direction, relation_type=rtype, limit=limit,
+            )
+        if result is None:
+            return f"Entity '{entity}' not found in workspace."
+        if result.total_neighbors == 0:
+            return f"No neighbors for '{result.anchor_entity_name}' (direction={direction})."
+
+        lines: list[str] = [
+            f"Neighbors of '{result.anchor_entity_name}' "
+            f"({result.total_neighbors} total, by relation: "
+            f"{dict(sorted(result.relation_type_counts.items(), key=lambda x: -x[1]))})"
+        ]
+        for n in result.neighbors:
+            arrow = "→" if n.direction == "out" else "←"
+            type_tag = f"[{n.entity_type}]" if n.entity_type else ""
+            lines.append(
+                f"\n{arrow} {n.relation_type} · {n.entity_name} {type_tag} "
+                f"({n.fact_count} facts)"
+            )
+            for f in n.top_facts:
+                trust = "✓" if f.grounded else "?"
+                val = f.object_value if len(f.object_value) <= 80 else f.object_value[:80] + "..."
+                lines.append(f"    {trust} {f.predicate}: {val}")
+            if not n.top_facts:
+                lines.append("    (no active facts)")
+
+        lines.append(
+            "\nNext: call recall_memory or get_episode_excerpt on one of these "
+            "entities to dig deeper."
+        )
+        response = "\n".join(lines)
+        if len(response) > MAX_RESPONSE_CHARS:
+            response = response[:MAX_RESPONSE_CHARS] + "\n\n[Truncated.]"
+        return response
+    except Exception as e:
+        return f"Failed to follow relation: {e}."

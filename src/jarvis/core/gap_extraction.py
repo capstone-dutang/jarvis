@@ -120,7 +120,13 @@ You MUST output valid JSON matching this exact schema:
 
 2. ENTITY TYPES: Use ONLY these values: person, project, technology, concept, preference, organization, location, event, resource.
 
-3. PREDICATES: Use free-form snake_case. Be specific. Examples: uses_for_database, decided_against, prefers_over, has_negative_sentiment_toward, works_on, plans_to_migrate_to.
+3. PREDICATES: Use free-form snake_case for STATE facts (uses_for_database, has_profit_margin_rate, works_on). For DECISIONS/JUDGMENTS, use these UPPERCASE_SNAKE predicates so recall can find the "why":
+   - CHOSEN_OVER(selected, rejected), REJECTED(agent, option), DECIDED_FOR(agent, X), PREFERRED_OVER(A, B)
+   - JUSTIFIED_BY(X, reason), MOTIVATED_BY(action, factor)
+   - COMPARED_WITH(A, B), CONSIDERED(agent, X)
+   - DEPRECATED(X), REPLACED_BY(old, new), INVALIDATED_BY(fact, reason)
+   Example: if the user picks SecondBrain over Argos because of margins, emit BOTH
+   (SecondBrain, CHOSEN_OVER, Argos) AND (SecondBrain, JUSTIFIED_BY, "86% margin + B2B market clarity"). This dual emission makes the decision findable and its reason searchable separately.
 
 4. WHAT TO EXTRACT — substantive knowledge only:
    - Decisions made and their rationale
