@@ -1466,6 +1466,63 @@ MCP 도구 `jarvis_get_episode_excerpt` + REST `/episode-excerpt` 등록.
 
 또 한 가지: 실험 A처럼 "이 데이터에서 안 듣는 실험"은 **깔끔히 리버트**. 코드 남겨두면 혼란. 리서치가 권고했어도 현장에서 안 들으면 제거.
 
+### (이어서) Phase 3: fact_episodes M:N 마이그레이션 + 재시딩 실측
+
+원래 계획의 옵션 3. 같은 팩트가 여러 에피소드에서 재언급되면 confidence 누적되도록 M:N 인프라 추가.
+
+**구현 3-phase**:
+1. 마이그레이션 `i9d0e1f2a3b4` — `fact_episodes(fact_id, episode_id, role)` 생성 + 기존 804 팩트 1:1 백필 + `knowledge_facts.source_episode_id` nullable 전환
+2. `store.py` dedup 로직 — `(entity, predicate, object_value)` 완전 일치면 신규 insert 스킵, `fact_episodes`에 `role='reinforcing'` 링크만 추가
+3. `recall.py` — `evidence.episode_count` 노출, 최신 링크 에피소드를 primary로 선택
+
+각 phase 단위 테스트 통과 (test_phase2_dedup.py: 3-시나리오 검증, 합성 링크 삽입 후 recall 응답 `episode_count=2` 확인).
+
+**실측 — 재시딩으로 효과 검증 시도**:
+- **1차 (기존 추출본 7개 재시딩)**: dedup 1건만 발동 (`Zep.retrieval_latency`). 7개 세션이 주제 다양해서 정확 일치가 거의 없었음
+- **2차 (JARVIS 3 + Argos 3 엄선, 신규 추출 $10.03)**: dedup **0건**. SQL 직접 확인 시 같은 (entity, predicate, object) 정확 일치 0개. 같은 (entity, predicate) + 다른 object 쌍은 10개 이상 (예: `JARVIS.invariant_rule` 5회, `JARVIS.has_phase1_status` 2회)
+
+**근본 원인**: LLM 추출기가 세션마다 같은 사실을 조금씩 다른 문장으로 뽑음. byte-exact 비교로는 절대 못 잡음.
+
+예:
+- 세션 A: `JARVIS.has_phase1_status = "로컬 검증 완료 (localhost:8002)"`
+- 세션 B: `JARVIS.has_phase1_status = "MCP 연결 완료, 서버 가동 중"`
+
+의미는 같은데 정확 일치 실패 → 둘 다 신규 저장 + 그 다음 건 supersede 경로로 튕겨나감 (16건 관측).
+
+### 시맨틱 dedup 리서치 의뢰 (원문 `2026-04-19-semantic-fact-dedup.md`)
+
+Graphiti / Mem0 / Zep / LangMem의 실제 dedup 구현 조사:
+- **공통 패턴**: 수치 임계값만으로 dedup 확정하는 시스템 없음. 임베딩은 후보 검색용, 최종 판정은 LLM (Graphiti: `EdgeDuplicate` Pydantic, Mem0: `ADD/UPDATE/DELETE/NOOP` JSON, LangMem: Trustcall JSON Patch)
+- **multilingual-e5 특이점**: InfoNCE contrastive loss로 점수 분포가 0.7-1.0에 압축. 절대값 신뢰 금지 — 외부 권장 임계값(0.85~0.88)을 그대로 이식하면 실패
+- **숨은 버그 발견**: `_resolve_predicate`가 `embed_text` (query: 프리픽스)를 양쪽에 사용 — E5 비대칭 의도 위반
+- **구조적 원인**: 현재 모든 predicate를 STATE로 취급. `invariant_rule`처럼 여러 값 공존 가능한 ATTRIBUTE 타입 분류 부재가 `invariant_rule` 5회 중복의 주범
+
+제안된 3-way 결정 트리 (LLM 없이, 이미 있는 임베딩+NLI로):
+- DEDUP: `cos ≥ 0.93 AND entailment ≥ 0.70` 또는 byte-exact
+- SUPERSEDE: `contradiction ≥ 0.85` 또는 `≥ 0.70` + change-language
+- REFINEMENT: `entailment ≥ 0.70 AND 0.70 ≤ cos < 0.88` (둘 다 유지, `refines` 엣지)
+- NEW: 그 외
+
+4단계 Adoption 로드맵 (버그 교정 → predicate_type 추가 → FactRelation 테이블 → 100쌍 라벨셋 grid search). 성공 지표: 207 fact 재처리 시 dedup ≥ 15건, false merge < 3%.
+
+### Q1-Q3 회귀 측정 — 오늘 변경이 원래 기능 망가뜨렸나
+
+원래 목적(트랜스크립트 재구성) 기준 재검증. `personal` 워크스페이스(6 episodes / 789 facts, 오늘 건드리지 않음)에 2-stage retrieval (`search_passages` → `get_episode_excerpt`) 적용:
+
+| Q | 결과 |
+|---|---|
+| Q1 예창패 SecondBrain/Argos 선택 | **PASS** — "아르고스는 예창패 아이템으로 부적합" top-1, excerpt 완전 재구성 |
+| Q2 펀드메신저 2400 → SecondBrain B2B | **PASS** — "2,400명 → 인터뷰 → 레퍼런스" 정확 회수 |
+| Q3 아르고스 strength 폐기 | **조건부 PASS** — `strength.py 삭제` 단문 질의 top-1 sim=0.699. 장황 자연어 질의("아르고스 strength 모델 폐기 이유")는 top5 탈락. E5 query compression 한계, 오늘 생긴 회귀 아님 |
+
+**결론**: 오늘 Phase 1~3 변경은 재구성 기능을 망가뜨리지 않음. M:N 인프라는 추가되었으나 실측 효과는 byte-exact 엄격함으로 인해 미미. 시맨틱 dedup이 다음 작업 대상.
+
+### 세션 메타 — 방향 상실과 피드백
+
+세션 중반 "지금 뭐하는지 모르겠다" 피드백 발생. 원인 자기 진단: 페이즈별 승인에만 집중하고 전체 그림 재정리를 안 함. 또 dedup 지표("몇 건 발동")에 매몰되어 원래 목적(재구성)에서 벗어남. 이후 Q1-Q3 회귀로 원래 목적 기준 판단 회복.
+
+`feedback_orientation.md`에 주기적 전체 그림 보고 원칙 저장.
+
 ---
 
 ## 아이디어 인덱스

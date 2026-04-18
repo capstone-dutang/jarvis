@@ -17,6 +17,7 @@ from jarvis.models.tables import (
     EntityRelation,
     EntityType,
     Episode,
+    FactEpisode,
     Fragment,
     FragmentType,
     KnowledgeFact,
@@ -449,7 +450,41 @@ async def store_fact(
     # Resolve predicate: "나이" and "age" → same predicate if semantically similar
     resolved_predicate = await _resolve_predicate(db, entity.id, fact_hint.predicate)
 
-    # Supersede: find existing active fact with same entity + resolved predicate
+    # Dedup: same (entity, predicate, object_value) already active?
+    # If yes, reuse that fact and just link this episode — no new row, no supersede.
+    # This is how confidence accumulates: N episodes → 1 fact + N fact_episodes rows.
+    dedup_result = await db.execute(
+        select(KnowledgeFact).where(
+            KnowledgeFact.entity_id == entity.id,
+            KnowledgeFact.predicate == resolved_predicate,
+            KnowledgeFact.object_value == fact_hint.object,
+            KnowledgeFact.superseded_at.is_(None),
+        )
+    )
+    dup = dedup_result.scalar_one_or_none()
+    if dup is not None:
+        await db.execute(
+            text("""
+                INSERT INTO fact_episodes (fact_id, episode_id, role)
+                VALUES (:fid, :eid, 'reinforcing')
+                ON CONFLICT (fact_id, episode_id) DO NOTHING
+            """),
+            {"fid": str(dup.id), "eid": str(episode.id)},
+        )
+        logger.info(
+            "Fact deduped: %s %s '%s' — linked episode %s (reinforcing)",
+            entity.name, resolved_predicate, dup.object_value[:60], episode.id,
+        )
+        return StoredFactResponse(
+            fact_id=dup.id,
+            entity_name=entity.name,
+            predicate=fact_hint.predicate,
+            object_value=fact_hint.object,
+            trust_level=dup.trust_level.value,
+            is_supersede=False,
+        )
+
+    # Supersede: same (entity, predicate) but different object_value → replace state
     result = await db.execute(
         select(KnowledgeFact).where(
             KnowledgeFact.entity_id == entity.id,
@@ -481,6 +516,8 @@ async def store_fact(
     )
     db.add(new_fact)
     await db.flush()
+
+    db.add(FactEpisode(fact_id=new_fact.id, episode_id=episode.id, role="source"))
 
     # Create Fragment (dual store: KnowledgeFact + Fragment).
     # source_quote carries the natural-language context — prefer it over the

@@ -148,6 +148,9 @@ class Episode(Base):
 
     session: Mapped["Session"] = relationship(back_populates="episodes")
     facts: Mapped[list["KnowledgeFact"]] = relationship(back_populates="source_episode")
+    fact_links: Mapped[list["FactEpisode"]] = relationship(
+        back_populates="episode", cascade="all, delete-orphan",
+    )
 
 
 # ── Knowledge Graph ──
@@ -218,7 +221,7 @@ class KnowledgeFact(Base):
     entity_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("entities.id", ondelete="CASCADE"), nullable=False)
     predicate: Mapped[str] = mapped_column(String(255), nullable=False)
     object_value: Mapped[str] = mapped_column(Text, nullable=False)
-    source_episode_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("episodes.id", ondelete="CASCADE"), nullable=False)
+    source_episode_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("episodes.id", ondelete="CASCADE"), nullable=True)
     source_quote: Mapped[str] = mapped_column(Text, nullable=False, default="")
     trust_level: Mapped[TrustLevel] = mapped_column(Enum(TrustLevel), nullable=False, default=TrustLevel.grounded)
 
@@ -231,7 +234,35 @@ class KnowledgeFact(Base):
         DateTime(timezone=True), nullable=True, index=True
     )
 
-    source_episode: Mapped["Episode"] = relationship(back_populates="facts")
+    source_episode: Mapped["Episode | None"] = relationship(back_populates="facts")
+    episode_links: Mapped[list["FactEpisode"]] = relationship(
+        back_populates="fact", cascade="all, delete-orphan", lazy="selectin",
+    )
+
+
+class FactEpisode(Base):
+    """M:N link between KnowledgeFact and Episode.
+
+    One fact may be asserted across many episodes (confidence accumulates);
+    one episode may produce many facts. The `role` distinguishes the kind of
+    support the episode provides for the fact.
+    """
+
+    __tablename__ = "fact_episodes"
+
+    fact_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("knowledge_facts.id", ondelete="CASCADE"), primary_key=True,
+    )
+    episode_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("episodes.id", ondelete="CASCADE"), primary_key=True,
+    )
+    role: Mapped[str] = mapped_column(String(20), nullable=False, default="source")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(),
+    )
+
+    fact: Mapped["KnowledgeFact"] = relationship(back_populates="episode_links")
+    episode: Mapped["Episode"] = relationship(back_populates="fact_links")
 
 
 class EntityRelation(Base):

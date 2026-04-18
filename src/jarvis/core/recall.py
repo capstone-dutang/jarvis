@@ -130,6 +130,26 @@ async def _build_fact_response(
     entity_result = await db.execute(select(Entity).where(Entity.id == fact.entity_id))
     entity = entity_result.scalar_one()
 
+    # Most-recent linked episode + episode count (via fact_episodes M:N).
+    # Falls back to fact.source_episode_id for safety during the transition.
+    link_result = await db.execute(
+        text("""
+            SELECT episode_id, COUNT(*) OVER () AS total
+            FROM fact_episodes
+            WHERE fact_id = :fid
+            ORDER BY created_at DESC
+            LIMIT 1
+        """),
+        {"fid": str(fact.id)},
+    )
+    link_row = link_result.fetchone()
+    if link_row:
+        primary_episode_id = link_row[0]
+        episode_count = int(link_row[1])
+    else:
+        primary_episode_id = fact.source_episode_id
+        episode_count = 1 if fact.source_episode_id else 0
+
     # Excerpt: prefer fragment.content (natural-language passage) over episode content.
     # Episode content is 100KB+ of raw transcript; fragment is the curated passage
     # linked to this fact. Fall back to episode if no fragment linked.
@@ -145,10 +165,12 @@ async def _build_fact_response(
     frag_row = frag_result.fetchone()
     if frag_row:
         excerpt = frag_row[0][:1000] if len(frag_row[0]) > 1000 else frag_row[0]
-    else:
-        episode_result = await db.execute(select(Episode).where(Episode.id == fact.source_episode_id))
+    elif primary_episode_id:
+        episode_result = await db.execute(select(Episode).where(Episode.id == primary_episode_id))
         episode = episode_result.scalar_one()
         excerpt = episode.content[:500] if len(episode.content) > 500 else episode.content
+    else:
+        excerpt = ""
 
     # Get history (other facts with same entity + predicate)
     history_result = await db.execute(
@@ -199,8 +221,9 @@ async def _build_fact_response(
         valid_from=fact.valid_from,
         evidence=EvidenceResponse(
             excerpt=excerpt,
-            episode_id=fact.source_episode_id,
+            episode_id=primary_episode_id or fact.source_episode_id,
             recorded_at=fact.recorded_at,
+            episode_count=episode_count,
         ),
         related_entities=related,
         history=history,

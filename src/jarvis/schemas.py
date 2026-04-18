@@ -77,6 +77,7 @@ class EvidenceResponse(BaseModel):
     excerpt: str
     episode_id: uuid.UUID
     recorded_at: datetime
+    episode_count: int = 1  # number of episodes asserting this fact (fact_episodes count)
 
 
 class FactHistoryEntry(BaseModel):
