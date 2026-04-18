@@ -1,7 +1,7 @@
 # JARVIS 절대문서
 
 > 이 문서 하나로 자비스의 모든 것을 안다.
-> 최종 갱신: 2026-04-18 (assistant 턴 필터 + 맥락 조립 MMR + Fragment/decay/alias 갭 메우기 반영)
+> 최종 갱신: 2026-04-19 (fact_episodes M:N + 현재 활성 로드맵 반영)
 > 상태: 초안 — 빈 곳을 채워나가며 확정
 
 ---
@@ -819,6 +819,30 @@ MCP 메모리 서버는 4개 아키텍처 캠프로 나뉜다:
 ---
 
 ## 14. 구현 Phase
+
+### 현재 활성 로드맵 (2026-04-19 이후)
+
+**현황**: MVP 단계 넘음. 4축 네비게이션(`explore`/`recall`/`follow`/`deep`) + 2-stage 회수 + fact_episodes M:N 인프라까지 구현. Q1-Q3 회귀로 재구성 기능 검증. 남은 본질적 과제는 **품질**(추출·dedup)이며 자동 수집은 사실상 설정 문제.
+
+**원칙 (2026-04-19 결정)**: 품질 먼저, 자동 수집은 뒤. 쓰레기 데이터 자동 수집은 가치 없음.
+
+| 우선순위 | 작업 | 기간 | 리스크 | 참조 |
+|---|---|---|---|---|
+| **1** | 저위험 교정 — `_resolve_predicate` E5 비대칭 프리픽스 버그, entity-level predicate 캐싱, `_check_nli_contradictions` top-10 제한 | 1~2일 | 낮음 | `research/2026-04-19-semantic-fact-dedup.md` §7.Phase1 |
+| **2** | 시맨틱 dedup + 추출 품질 (분리 불가 한 덩어리) — `predicate_type: STATE/ATTRIBUTE/RELATION` 추출 프롬프트 추가, `FactHint` 스키마 필드, `store_fact`에 cos+NLI 3-way 결정 트리, ATTRIBUTE predicate 임계값 0.92 상향 | 3~5일 | 중간 | 같은 문서 §4.3, §7.Phase2 |
+| **3** | 모델 보강 — `FactRelation(from,to,kind)` 테이블 (`refines`, `supersedes` 명시), `KnowledgeFact.fact_embedding` 컬럼+HNSW, recall refine chain 필터 | 5~7일 | 중간 | 같은 문서 §7.Phase3 |
+| **4** | 검증 — 100쌍 수동 라벨셋, 임계값 grid search, 성공 기준: 기존 207 fact 재처리 시 dedup ≥ 15건 / false merge < 3% | 2~3일 | 낮음 | 같은 문서 §7.Phase4 |
+| **5** | 자동 수집 안내 — MCP `store_memory` 설명 / README에 Claude Code `Stop` 훅 설정 가이드. 코드 변경 없음 | ≈0일 | 낮음 | Path A 참조 (§3) |
+
+**명시적으로 안 하는 것들 (우선순위 낮음)**:
+- `follow_relation`/`explore_topic` 추가 튜닝 — 이미 쓸만함
+- Web UI — 단일 사용자 시점 CLI/MCP로 충분
+- GCP 배포 — 로컬 검증 부족
+- 전체 91개 트랜스크립트 재시딩 — 품질 파이프라인 안정화 전엔 돈낭비
+
+**직전 완료** (2026-04-19 세션): fact_episodes M:N 마이그레이션, store.py dedup(byte-exact), recall.py `episode_count` 노출. 실측에서 dedup 효과 미미 → 시맨틱 dedup이 우선순위 2의 이유.
+
+---
 
 ### Phase 1: MVP — 동작하는 데모
 
