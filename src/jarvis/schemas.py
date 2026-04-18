@@ -269,3 +269,25 @@ class PassageHitResponse(BaseModel):
 class SearchPassagesResponse(BaseModel):
     query: str
     results: list[PassageHitResponse]
+
+
+# ── Get Episode Excerpt (drill into one episode) ──
+
+
+class EpisodeExcerptRequest(BaseModel):
+    workspace_id: uuid.UUID
+    episode_id: uuid.UUID
+    query: str = Field(..., min_length=1)
+    max_chars: int = Field(default=2000, ge=200, le=10000)
+    mode: str = Field(default="relevant", pattern="^(relevant|full|head)$")
+
+
+class EpisodeExcerptResponse(BaseModel):
+    episode_id: uuid.UUID
+    excerpt: str
+    total_length: int
+    mode: str
+    passage_count: int
+    matched_keywords: list[str] = Field(default_factory=list)
+    created_at: datetime
+    summary: str | None = None

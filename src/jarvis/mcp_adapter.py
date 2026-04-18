@@ -11,6 +11,7 @@ import uuid
 from mcp.server.fastmcp import FastMCP
 from sqlalchemy import select
 
+from jarvis.core.episode_excerpt import get_episode_excerpt as _get_episode_excerpt
 from jarvis.core.passage_search import search_passages as _search_passages
 from jarvis.core.recall import recall_memory as _recall
 from jarvis.core.store import store_memory as _store
@@ -471,3 +472,65 @@ async def search_passages_tool(workspace: str, query: str, limit: int = 10) -> s
         return response
     except Exception as e:
         return f"Failed to search passages: {e}."
+
+
+# ── Tool 7: Get Episode Excerpt (drill into one episode's transcript) ──
+
+
+@mcp.tool(name="jarvis_get_episode_excerpt")
+async def get_episode_excerpt_tool(
+    workspace: str,
+    episode_id: str,
+    query: str,
+    max_chars: int = 2000,
+    mode: str = "relevant",
+) -> str:
+    """Pull a query-relevant passage out of a single episode's raw transcript.
+
+    Use this after recall_memory when you have a fact's episode_id and need
+    the surrounding reasoning — the "why/decision/comparison" that lives in
+    the original conversation but didn't make it into extracted facts.
+
+    Do NOT use this for general search (use recall_memory or search_passages).
+    This is for drilling into ONE known episode when you need the full context.
+
+    Args:
+        workspace: Workspace name or UUID
+        episode_id: Specific episode to drill into (from recall_memory result)
+        query: Natural language query to locate relevant passage in the episode
+        max_chars: Size budget for excerpt (200-10000, default 2000)
+        mode: "relevant" = keyword-scored passage picks (default),
+              "full" or "head" = episode prefix
+    """
+    try:
+        ws_id = await _resolve_workspace(workspace)
+        try:
+            ep_uuid = uuid.UUID(episode_id)
+        except (ValueError, TypeError):
+            return f"Invalid episode_id '{episode_id}' (expected UUID)."
+
+        async with async_session_factory() as db:
+            result = await _get_episode_excerpt(
+                db, ws_id, ep_uuid, query, max_chars=max_chars, mode=mode,
+            )
+        if result is None:
+            return f"Episode {episode_id} not found in workspace."
+
+        header_parts = [
+            f"Episode {str(result.episode_id)[:8]}",
+            f"mode={result.mode}",
+            f"total={result.total_length}ch",
+            f"passages={result.passage_count}",
+        ]
+        if result.matched_keywords:
+            header_parts.append(f"matched=[{', '.join(result.matched_keywords[:5])}]")
+        if result.summary:
+            header_parts.append(f"summary={result.summary[:60]}")
+        header = " · ".join(header_parts)
+
+        response = f"{header}\n\n{result.excerpt}"
+        if len(response) > MAX_RESPONSE_CHARS:
+            response = response[:MAX_RESPONSE_CHARS] + "\n\n[Truncated by MCP cap.]"
+        return response
+    except Exception as e:
+        return f"Failed to get episode excerpt: {e}."

@@ -6,6 +6,9 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from fastapi import HTTPException
+
+from jarvis.core.episode_excerpt import get_episode_excerpt
 from jarvis.core.passage_search import search_passages
 from jarvis.core.recall import recall_memory
 from jarvis.core.store import create_episode, get_or_create_session, store_memory
@@ -15,6 +18,8 @@ from jarvis.models.tables import Entity, Episode, KnowledgeFact, Workspace
 from jarvis.schemas import (
     AnalyzeGapsRequest,
     AnalyzeGapsResponse,
+    EpisodeExcerptRequest,
+    EpisodeExcerptResponse,
     ExploreTopicRequest,
     InitializeMemoryRequest,
     InitializeMemoryResponse,
@@ -89,6 +94,29 @@ async def api_search_passages(
             )
             for h in hits
         ],
+    )
+
+
+@router.post("/episode-excerpt", response_model=EpisodeExcerptResponse)
+async def api_episode_excerpt(
+    request: EpisodeExcerptRequest,
+    db: AsyncSession = Depends(get_session),
+) -> EpisodeExcerptResponse:
+    result = await get_episode_excerpt(
+        db, request.workspace_id, request.episode_id,
+        request.query, request.max_chars, request.mode,
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="Episode not found in workspace")
+    return EpisodeExcerptResponse(
+        episode_id=result.episode_id,
+        excerpt=result.excerpt,
+        total_length=result.total_length,
+        mode=result.mode,
+        passage_count=result.passage_count,
+        matched_keywords=result.matched_keywords,
+        created_at=result.created_at,
+        summary=result.summary,
     )
 
 
