@@ -140,7 +140,16 @@ async def classify_turns(
     """Apply confirmed subject assignments.
 
     existing_links: [{'subject_id': UUID, 'turn_ids': [UUID, ...]}, ...]
-    new_subjects: [{'name': str, 'parent_id': UUID | None, 'turn_ids': [UUID, ...]}, ...]
+    new_subjects: [{
+        'name': str,
+        'parent_id': UUID | None,           # explicit parent id
+        'parent_name': str | None,          # OR parent by name (resolved at apply time)
+        'turn_ids': [UUID, ...]
+    }, ...]
+
+    new_subjects are processed in two passes:
+      1. Items with no parent (top-level) — created first
+      2. Items with a parent_name pointing to an item from pass 1 — resolved
     """
     created = 0
     total_linked = 0
@@ -153,16 +162,48 @@ async def classify_turns(
         total_linked += linked
         total_skipped += skipped
 
+    # Pass 1: top-level new subjects (no parent)
+    name_to_id: dict[str, uuid.UUID] = {}
     for spec in new_subjects:
-        name = spec["name"]
-        parent_id = spec.get("parent_id")
-        parent_uuid = uuid.UUID(str(parent_id)) if parent_id else None
+        if spec.get("parent_id") or spec.get("parent_name"):
+            continue
+        ent = await _create_subject(db, workspace_id, spec["name"], None)
+        name_to_id[normalize_name(spec["name"])] = ent.id
+        created += 1
         turn_ids = [uuid.UUID(str(t)) for t in spec.get("turn_ids", [])]
+        linked, skipped = await _link_turns(db, workspace_id, ent.id, turn_ids)
+        total_linked += linked
+        total_skipped += skipped
 
-        ent = await _create_subject(db, workspace_id, name, parent_uuid)
-        if ent.created_at is not None:  # rough heuristic
-            # Always count as created — we'll let caller verify with subjects list
-            created += 1
+    await db.flush()
+
+    # Pass 2: subjects with parent (resolved via parent_id explicit or parent_name)
+    for spec in new_subjects:
+        parent_id_raw = spec.get("parent_id")
+        parent_name = spec.get("parent_name")
+        if not parent_id_raw and not parent_name:
+            continue
+        parent_uuid: uuid.UUID | None = None
+        if parent_id_raw:
+            parent_uuid = uuid.UUID(str(parent_id_raw))
+        elif parent_name:
+            norm = normalize_name(parent_name)
+            if norm in name_to_id:
+                parent_uuid = name_to_id[norm]
+            else:
+                # Lookup in DB
+                result = await db.execute(
+                    select(Entity).where(
+                        Entity.workspace_id == workspace_id,
+                        Entity.name_normalized == norm,
+                    )
+                )
+                exist = result.scalar_one_or_none()
+                if exist:
+                    parent_uuid = exist.id
+        ent = await _create_subject(db, workspace_id, spec["name"], parent_uuid)
+        created += 1
+        turn_ids = [uuid.UUID(str(t)) for t in spec.get("turn_ids", [])]
         linked, skipped = await _link_turns(db, workspace_id, ent.id, turn_ids)
         total_linked += linked
         total_skipped += skipped
