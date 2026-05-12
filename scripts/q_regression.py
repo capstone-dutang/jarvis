@@ -12,7 +12,7 @@ import sys
 import urllib.request
 
 WS = "2d92735f-c858-4398-b4dd-d28423208e17"
-URL = "http://127.0.0.1:8003/api/v1/memory"
+URL = "http://127.0.0.1:8005/api/v1/memory"
 
 QUESTIONS = [
     ("Q1", "예창패 아이템으로 SecondBrain과 Argos 중 무엇을 선택했고 왜인가",

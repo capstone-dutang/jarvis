@@ -71,6 +71,7 @@ async def build_topic_map(
         fts_query=preprocessed.fts_query,
         query_vector=query_vector,
         seed_ids=seed_ids,
+        anchor_entity_ids=[],  # explore_topic is broad search — no anchor filter
         limit=TOPIC_POOL_SIZE,
     )
 
