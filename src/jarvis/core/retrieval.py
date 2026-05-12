@@ -191,14 +191,18 @@ async def get_subject_tree(
     db: AsyncSession,
     workspace_id: uuid.UUID,
 ) -> tuple[list[dict], int]:
-    """Build hierarchical subject tree from entities.parent_id."""
+    """Build hierarchical subject tree from entities.parent_id.
+
+    Only entities with at least one turn_subjects link are included
+    (excludes knowledge_facts-only entities like 'user', 'assistant').
+    """
     rows = await db.execute(
         text("""
             SELECT
                 e.id, e.name, e.parent_id,
-                COALESCE(tc.cnt, 0) AS turn_count
+                tc.cnt AS turn_count
             FROM entities e
-            LEFT JOIN (
+            JOIN (
                 SELECT subject_id, COUNT(*) AS cnt
                 FROM turn_subjects
                 WHERE workspace_id = :ws

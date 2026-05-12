@@ -30,13 +30,16 @@ async def list_subjects(
     db: AsyncSession,
     workspace_id: uuid.UUID,
     top_level_only: bool = True,
+    include_empty: bool = False,
 ) -> list[dict[str, Any]]:
     """List subjects (entities) with turn counts.
 
-    Top-level subjects (parent_id IS NULL) are the horizontal chips in the UI.
-    When top_level_only=False, includes nested sub-subjects too.
+    Subjects are entities that are linked to turns via turn_subjects.
+    By default excludes entities with 0 turn links (these are knowledge_facts
+    entities, not user-facing subjects).
     """
     parent_filter = "AND e.parent_id IS NULL" if top_level_only else ""
+    empty_filter = "" if include_empty else "AND COALESCE(tc.cnt, 0) > 0"
     rows = await db.execute(
         text(f"""
             SELECT
@@ -50,7 +53,7 @@ async def list_subjects(
                 WHERE workspace_id = :ws
                 GROUP BY subject_id
             ) tc ON tc.subject_id = e.id
-            WHERE e.workspace_id = :ws {parent_filter}
+            WHERE e.workspace_id = :ws {parent_filter} {empty_filter}
             ORDER BY turn_count DESC, e.name ASC
         """),
         {"ws": str(workspace_id)},
