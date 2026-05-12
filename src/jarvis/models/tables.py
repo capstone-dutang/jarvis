@@ -6,6 +6,7 @@ from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
+    Date,
     DateTime,
     Enum,
     Float,
@@ -184,6 +185,11 @@ class Entity(Base):
     # Pre-computed Leiden community assignment. Used by recall MMR for diversity.
     # Recomputed offline by worker after batch processing.
     community_id: Mapped[int | None] = mapped_column(nullable=True, index=True)
+    # Subject hierarchy: NULL = top-level subject, else child of parent_id.
+    # UI shows top-level subjects as flat horizontal list; hierarchy is data-side.
+    parent_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("entities.id", ondelete="SET NULL"), nullable=True, index=True,
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     workspace: Mapped["Workspace"] = relationship(back_populates="entities")
@@ -319,6 +325,110 @@ class Fragment(Base):
         ForeignKey("knowledge_facts.id", ondelete="SET NULL"), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+# ── Turn-level + Subject Tree + Daily Summary (2026-05-07 비전 재정의) ──
+
+
+class Turn(Base):
+    """A single message in a conversation transcript.
+
+    Raw transcripts arrive as ordered turn arrays. Each Turn is one message
+    (user/assistant/system/tool). Turns belong to an Episode (the session)
+    and can be linked to multiple Subjects via TurnSubject (M:N).
+    """
+
+    __tablename__ = "turns"
+    __table_args__ = (
+        UniqueConstraint("episode_id", "sequence", name="uq_turns_episode_seq"),
+        Index("ix_turns_workspace_time", "workspace_id", "timestamp"),
+        Index("ix_turns_episode", "episode_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False,
+    )
+    episode_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("episodes.id", ondelete="CASCADE"), nullable=False,
+    )
+    sequence: Mapped[int] = mapped_column(nullable=False)
+    role: Mapped[str] = mapped_column(String(20), nullable=False)  # user/assistant/system/tool
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False,
+    )
+
+    subject_links: Mapped[list["TurnSubject"]] = relationship(
+        back_populates="turn", cascade="all, delete-orphan",
+    )
+
+
+class TurnSubject(Base):
+    """M:N link between Turn and Subject (Entity).
+
+    One turn can belong to multiple subjects (e.g. a turn discussing
+    "JARVIS의 OAuth 흐름" belongs to both [자비스] and [자비스-인증]).
+    No priority field — UI shows turn under any subject it's linked to.
+    """
+
+    __tablename__ = "turn_subjects"
+    __table_args__ = (
+        Index("ix_turn_subjects_subject", "subject_id"),
+        Index("ix_turn_subjects_workspace_subject", "workspace_id", "subject_id"),
+    )
+
+    turn_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("turns.id", ondelete="CASCADE"), primary_key=True,
+    )
+    subject_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("entities.id", ondelete="CASCADE"), primary_key=True,
+    )
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False,
+    )
+
+    turn: Mapped["Turn"] = relationship(back_populates="subject_links")
+
+
+class DailySubjectSummary(Base):
+    """Summary of all turns linked to a Subject on a specific date.
+
+    Generated when user runs reflect ("오늘 정리해"). Day/week/month
+    zoom views are built by combining these (date, subject) summaries.
+    """
+
+    __tablename__ = "daily_subject_summaries"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id", "subject_id", "date",
+            name="uq_dss_workspace_subject_date",
+        ),
+        Index("ix_dss_workspace_date", "workspace_id", "date"),
+        Index("ix_dss_subject", "subject_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False,
+    )
+    subject_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("entities.id", ondelete="CASCADE"), nullable=False,
+    )
+    date: Mapped[datetime] = mapped_column(Date, nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    turn_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False,
+    )
 
 
 class Embedding(Base):

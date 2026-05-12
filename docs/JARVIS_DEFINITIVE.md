@@ -833,11 +833,11 @@ MCP 메모리 서버는 4개 아키텍처 캠프로 나뉜다:
 
 | 우선순위 | 작업 | 기간 | 참조 |
 |---|---|---|---|
-| **1** | 데이터 모델 확장 — `entities.parent_id`+`summary` 컬럼, `turns` 테이블, `turn_subjects` M:N, 기존 6 episodes → turns 마이그레이션 | 3~4일 | 비전 §4, §7.1 |
-| **2** | 새 store_memory 워크플로우 — 턴 배열 + 주제 분류 제안 + 사용자 컨펌. "어디까지 올라가있어?" 메타 쿼리 | 2~3일 | 비전 §5, §7.2 |
-| **3** | 회수 API — `/timeline?from=&to=`, `/subject/{id}/feed`, `/subject/{id}/tree`. 기존 search_passages에 subject 필터 옵션 | 1~2일 | 비전 §7.3 |
-| **4** | 일/월/년 zoom + reflect 흐름 — "오늘 정리해" 명령에 day-level 요약 생성. 월/년 집계 | 2~3일 | 비전 §7.4 |
-| **5** | 웹 UI MVP — 노션 스타일 사이드바 트리 + 페이지 본문 (시간순 또는 주제별 줄글) + 검색 박스 | 1~2주 | 비전 §3, §7.5 |
+| **1** | 데이터 모델 확장 — `entities.parent_id` 컬럼 (주제 계층, 데이터 보존용 — UI는 평면), `turns` 테이블, `turn_subjects` M:N, `daily_subject_summaries(date, subject_id, summary)` 테이블. **기존 6 episodes 마이그레이션 없음** (raw 트랜스크립트 직접 ingest 예정) | 2~3일 | 비전 §4, §7.1 |
+| **2** | raw 트랜스크립트 ingest 파이프라인 — `preprocessed/sessions/*.json` (99개) + `~/.claude/projects/**/*.jsonl` (2167개) 에서 직접 turn 단위 추출 + 주제 분류 제안 + 사용자 컨펌 흐름. "어디까지 올라가있어?" 메타 쿼리 | 3~4일 | 비전 §5, §7.2 |
+| **3** | 회수 API — `/timeline?from=&to=`, `/subject/{id}/feed`. 기존 search_passages에 subject 필터 옵션 | 1~2일 | 비전 §7.3 |
+| **4** | (날짜 × 주제) 요약 reflect 흐름 — "오늘 정리해" 명령에 그날 등장한 각 주제별 요약 생성·저장. 일/주/월 zoom은 이 요약들 조합 | 2~3일 | 비전 §7.4 |
+| **5** | 웹 UI MVP — 좌측 사이드바 (월/주/일 토글, 내림차순 기본) + 메인 상단 가로 주제 키워드 + 본문 마크다운 렌더(편집 없음) + 우측 요약 패널 | 1~2주 | 비전 §3, §7.5 |
 | **6** | (선택) 자동 정합성 → 힌트로 — 자동 supersede/dedup/NLI 끄고 사용자에게 힌트만 제공 | 2~3일 | 비전 §7.6 |
 
 **명시적으로 안 하는 것들**:
