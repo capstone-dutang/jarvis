@@ -3,8 +3,10 @@
 import contextlib
 import logging
 from collections.abc import AsyncGenerator
+from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.responses import FileResponse
 
 from jarvis.api.v1.memory import router as memory_router
 from jarvis.api.v1.users import members_router
@@ -54,6 +56,15 @@ app.include_router(members_router, prefix="/api/v1")
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+# Web UI — single-page HTML at root (P5)
+_WEB_INDEX = Path(__file__).parent / "web" / "index.html"
+
+
+@app.get("/")
+async def index() -> FileResponse:
+    return FileResponse(_WEB_INDEX, media_type="text/html")
 
 
 # MCP endpoint — mounted AFTER REST routes so /health etc. are not shadowed

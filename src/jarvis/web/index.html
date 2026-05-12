@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>JARVIS — AI 대화의 git</title>
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
+<style>
+  :root {
+    --bg: #fafaf7;
+    --panel: #ffffff;
+    --border: #e5e5e0;
+    --text: #1f1f1f;
+    --muted: #6b6b6b;
+    --accent: #2563eb;
+    --accent-soft: #dbeafe;
+    --hover: #f3f3ef;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; font: 14px/1.5 -apple-system, "Segoe UI", "Noto Sans KR", sans-serif; color: var(--text); background: var(--bg); }
+  .app { display: grid; grid-template-columns: 240px 1fr 320px; height: 100vh; }
+
+  /* Sidebar */
+  .sidebar { background: var(--panel); border-right: 1px solid var(--border); overflow-y: auto; }
+  .sidebar h2 { font-size: 12px; text-transform: uppercase; color: var(--muted); padding: 16px 16px 8px; margin: 0; letter-spacing: 0.05em; }
+  .sidebar .controls { padding: 8px 16px; display: flex; gap: 4px; }
+  .sidebar .controls button { flex: 1; font-size: 11px; padding: 4px 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; cursor: pointer; }
+  .sidebar .controls button.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+  .tree-node { padding: 4px 16px; cursor: pointer; user-select: none; font-size: 13px; }
+  .tree-node:hover { background: var(--hover); }
+  .tree-node.month { font-weight: 600; }
+  .tree-node.week { padding-left: 32px; color: var(--muted); }
+  .tree-node.day { padding-left: 48px; color: var(--text); }
+  .tree-node.day.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+  .tree-node .count { float: right; font-size: 11px; color: var(--muted); }
+
+  /* Main */
+  .main { display: flex; flex-direction: column; overflow: hidden; }
+  .subjects-bar { padding: 12px 24px; border-bottom: 1px solid var(--border); background: var(--panel); display: flex; gap: 8px; overflow-x: auto; flex-wrap: nowrap; }
+  .chip { flex-shrink: 0; padding: 6px 14px; border: 1px solid var(--border); border-radius: 16px; background: var(--bg); cursor: pointer; font-size: 13px; }
+  .chip:hover { background: var(--hover); }
+  .chip.active { background: var(--accent); color: white; border-color: var(--accent); }
+  .chip .count { font-size: 11px; opacity: 0.7; margin-left: 4px; }
+  .body { flex: 1; overflow-y: auto; padding: 24px 32px; }
+  .empty { color: var(--muted); text-align: center; padding: 60px 20px; }
+  .turn { margin-bottom: 24px; padding: 16px 20px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; }
+  .turn .meta { font-size: 11px; color: var(--muted); margin-bottom: 8px; }
+  .turn .meta .role { padding: 2px 8px; border-radius: 4px; background: var(--bg); margin-right: 8px; font-weight: 600; }
+  .turn .meta .role.user { color: #1f1f1f; }
+  .turn .meta .role.assistant { color: var(--accent); }
+  .turn .text { word-break: break-word; }
+  .turn .text pre { background: var(--bg); padding: 12px; border-radius: 4px; overflow-x: auto; font-size: 12px; }
+  .turn .text code { background: var(--bg); padding: 1px 4px; border-radius: 3px; font-size: 12px; }
+  .turn .text blockquote { border-left: 3px solid var(--border); margin: 8px 0; padding-left: 12px; color: var(--muted); }
+
+  /* Right panel */
+  .right { background: var(--panel); border-left: 1px solid var(--border); overflow-y: auto; padding: 20px 18px; }
+  .right h3 { font-size: 12px; text-transform: uppercase; color: var(--muted); margin: 0 0 12px; letter-spacing: 0.05em; }
+  .summary-card { padding: 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; margin-bottom: 12px; font-size: 13px; }
+  .summary-card .meta { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+
+  /* Header status */
+  .status-bar { padding: 8px 16px; background: var(--bg); border-bottom: 1px solid var(--border); font-size: 11px; color: var(--muted); display: flex; justify-content: space-between; }
+  .status-bar a { color: var(--accent); text-decoration: none; cursor: pointer; }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="status-bar">
+      <span id="ws-name">…</span>
+      <a id="refresh-btn">↻</a>
+    </div>
+    <div class="controls">
+      <button id="zoom-month" class="zoom-btn">월</button>
+      <button id="zoom-week" class="zoom-btn">주</button>
+      <button id="zoom-day" class="zoom-btn active">일</button>
+      <button id="order-btn" title="정렬 방향 토글">↓</button>
+    </div>
+    <div id="date-tree"></div>
+  </aside>
+
+  <main class="main">
+    <div class="subjects-bar" id="subjects-bar"></div>
+    <div class="body" id="body">
+      <div class="empty">사이드바에서 날짜를 선택하거나 상단에서 주제를 선택하세요.</div>
+    </div>
+  </main>
+
+  <aside class="right">
+    <h3>요약</h3>
+    <div id="summaries-list">
+      <div class="empty" style="padding: 20px 0;">선택된 (날짜, 주제) 요약 없음</div>
+    </div>
+  </aside>
+</div>
+
+<script>
+const API = '/api/v1/memory';
+let WORKSPACE_ID = null;
+let state = {
+  selectedDate: null,
+  selectedSubjectId: null,
+  zoom: 'day',
+  descending: true,
+  subjects: [],
+  dateBuckets: { months: {} },
+};
+
+async function post(path, body) {
+  const res = await fetch(API + path, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`${path} ${res.status}`);
+  return res.json();
+}
+
+async function pickWorkspace() {
+  const res = await fetch('/api/v1/workspaces');
+  const list = await res.json();
+  // Pick the one with most episodes — for now, hardcode 'vision-test' or first non-test
+  let target = list.find(w => w.name === 'vision-test')
+            || list.find(w => w.name === 'personal')
+            || list[0];
+  WORKSPACE_ID = target.id;
+  document.getElementById('ws-name').textContent = target.name;
+}
+
+async function loadDateBuckets() {
+  // Get status first (date range), then fetch turns in batches to build month/week/day counts
+  const status = await post('/upload-status', { workspace_id: WORKSPACE_ID });
+  if (!status.earliest_episode_at) return;
+
+  // For MVP: fetch all turn timestamps via /timeline with large limit, bucket client-side
+  const tl = await post('/timeline', {
+    workspace_id: WORKSPACE_ID,
+    descending: state.descending, limit: 5000,
+  });
+  const buckets = {}; // {YYYY-MM: {weeks: {WW: {days: {YYYY-MM-DD: count}}}}}
+  for (const t of tl.turns) {
+    const d = new Date(t.timestamp);
+    const ym = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+    const ymd = `${ym}-${String(d.getDate()).padStart(2,'0')}`;
+    const week = isoWeek(d);
+    if (!buckets[ym]) buckets[ym] = { count: 0, weeks: {} };
+    if (!buckets[ym].weeks[week]) buckets[ym].weeks[week] = { count: 0, days: {} };
+    if (!buckets[ym].weeks[week].days[ymd]) buckets[ym].weeks[week].days[ymd] = 0;
+    buckets[ym].count++;
+    buckets[ym].weeks[week].count++;
+    buckets[ym].weeks[week].days[ymd]++;
+  }
+  state.dateBuckets = { months: buckets };
+  renderDateTree();
+}
+
+function isoWeek(d) {
+  const target = new Date(d.valueOf());
+  const dayNr = (d.getDay() + 6) % 7;
+  target.setDate(target.getDate() - dayNr + 3);
+  const jan4 = new Date(target.getFullYear(), 0, 4);
+  const dayDiff = (target - jan4) / 86400000;
+  return Math.ceil((dayDiff + ((jan4.getDay() + 6) % 7) + 1) / 7);
+}
+
+function renderDateTree() {
+  const tree = document.getElementById('date-tree');
+  tree.innerHTML = '';
+  const months = Object.keys(state.dateBuckets.months).sort();
+  if (!state.descending) {} else months.reverse();
+
+  for (const ym of months) {
+    const mb = state.dateBuckets.months[ym];
+    const mnode = document.createElement('div');
+    mnode.className = 'tree-node month';
+    mnode.innerHTML = `<span>▼ ${ym}</span><span class="count">${mb.count}</span>`;
+    tree.appendChild(mnode);
+    let monthOpen = true;
+    mnode.onclick = () => { monthOpen = !monthOpen; monthChildren.style.display = monthOpen ? 'block' : 'none'; mnode.firstElementChild.textContent = (monthOpen ? '▼ ' : '▶ ') + ym; };
+
+    const monthChildren = document.createElement('div');
+    tree.appendChild(monthChildren);
+
+    if (state.zoom === 'month') continue;
+
+    const weeks = Object.keys(mb.weeks).sort((a,b) => state.descending ? b-a : a-b);
+    for (const w of weeks) {
+      const wb = mb.weeks[w];
+      if (state.zoom === 'week') {
+        const wnode = document.createElement('div');
+        wnode.className = 'tree-node week';
+        wnode.innerHTML = `<span>${w}주차</span><span class="count">${wb.count}</span>`;
+        monthChildren.appendChild(wnode);
+        continue;
+      }
+      // day zoom: list days directly
+      const days = Object.keys(wb.days).sort((a,b) => state.descending ? b.localeCompare(a) : a.localeCompare(b));
+      for (const d of days) {
+        const cnt = wb.days[d];
+        const dnode = document.createElement('div');
+        dnode.className = 'tree-node day' + (state.selectedDate === d ? ' active' : '');
+        dnode.innerHTML = `<span>${d.slice(8)}일</span><span class="count">${cnt}</span>`;
+        dnode.onclick = (e) => { e.stopPropagation(); selectDate(d); };
+        monthChildren.appendChild(dnode);
+      }
+    }
+  }
+}
+
+async function loadSubjects() {
+  const res = await post('/subjects', { workspace_id: WORKSPACE_ID, top_level_only: true });
+  state.subjects = res.subjects;
+  renderSubjects();
+}
+
+function renderSubjects() {
+  const bar = document.getElementById('subjects-bar');
+  bar.innerHTML = '';
+  if (state.subjects.length === 0) {
+    bar.innerHTML = '<span style="color: var(--muted); font-size: 13px;">아직 분류된 주제 없음</span>';
+    return;
+  }
+  // "All" chip
+  const all = document.createElement('div');
+  all.className = 'chip' + (state.selectedSubjectId === null ? ' active' : '');
+  all.innerHTML = `전체`;
+  all.onclick = () => selectSubject(null);
+  bar.appendChild(all);
+  for (const s of state.subjects) {
+    const chip = document.createElement('div');
+    chip.className = 'chip' + (state.selectedSubjectId === s.subject_id ? ' active' : '');
+    chip.innerHTML = `${s.name}<span class="count">${s.turn_count}</span>`;
+    chip.onclick = () => selectSubject(s.subject_id);
+    bar.appendChild(chip);
+  }
+}
+
+async function selectDate(d) {
+  state.selectedDate = d;
+  renderDateTree();
+  renderSubjects();
+  await renderBody();
+  await renderSummary();
+}
+
+async function selectSubject(id) {
+  state.selectedSubjectId = id;
+  renderSubjects();
+  await renderBody();
+  await renderSummary();
+}
+
+async function renderBody() {
+  const body = document.getElementById('body');
+  if (!state.selectedDate && !state.selectedSubjectId) {
+    body.innerHTML = '<div class="empty">사이드바에서 날짜를 선택하거나 상단에서 주제를 선택하세요.</div>';
+    return;
+  }
+
+  let turns = [];
+  if (state.selectedSubjectId) {
+    const req = {
+      workspace_id: WORKSPACE_ID, subject_id: state.selectedSubjectId,
+      descending: state.descending, limit: 200, include_descendants: true,
+    };
+    if (state.selectedDate) {
+      req.date_from = `${state.selectedDate}T00:00:00Z`;
+      req.date_to = nextDay(state.selectedDate) + 'T00:00:00Z';
+    }
+    const res = await post('/subject-feed', req);
+    turns = res.turns;
+  } else if (state.selectedDate) {
+    const res = await post('/timeline', {
+      workspace_id: WORKSPACE_ID,
+      date_from: `${state.selectedDate}T00:00:00Z`,
+      date_to: nextDay(state.selectedDate) + 'T00:00:00Z',
+      descending: state.descending, limit: 500,
+    });
+    turns = res.turns;
+  }
+  if (turns.length === 0) {
+    body.innerHTML = '<div class="empty">해당 범위에 대화 없음.</div>';
+    return;
+  }
+  body.innerHTML = turns.map(t => {
+    const dt = new Date(t.timestamp);
+    const time = dt.toISOString().replace('T',' ').slice(0,19);
+    const rendered = marked.parse(t.text || '');
+    return `<div class="turn">
+      <div class="meta"><span class="role ${t.role}">${t.role}</span>${time}</div>
+      <div class="text">${rendered}</div>
+    </div>`;
+  }).join('');
+}
+
+function nextDay(d) {
+  const dt = new Date(d + 'T00:00:00Z');
+  dt.setUTCDate(dt.getUTCDate() + 1);
+  return dt.toISOString().slice(0,10);
+}
+
+async function renderSummary() {
+  const panel = document.getElementById('summaries-list');
+  const req = { workspace_id: WORKSPACE_ID };
+  if (state.selectedDate) {
+    req.date_from = state.selectedDate;
+    req.date_to = nextDay(state.selectedDate);
+  }
+  if (state.selectedSubjectId) req.subject_id = state.selectedSubjectId;
+  const res = await post('/summaries', req);
+  if (res.summaries.length === 0) {
+    panel.innerHTML = '<div class="empty" style="padding: 20px 0;">선택된 범위 요약 없음</div>';
+    return;
+  }
+  panel.innerHTML = res.summaries.map(s => `
+    <div class="summary-card">
+      <div class="meta">${s.date} · ${s.subject_name} · ${s.turn_count} turns</div>
+      <div>${marked.parse(s.summary)}</div>
+    </div>
+  `).join('');
+}
+
+// Wire controls
+function setZoom(z) {
+  state.zoom = z;
+  for (const b of document.querySelectorAll('.zoom-btn')) b.classList.remove('active');
+  document.getElementById('zoom-' + z).classList.add('active');
+  renderDateTree();
+}
+document.getElementById('zoom-month').onclick = () => setZoom('month');
+document.getElementById('zoom-week').onclick = () => setZoom('week');
+document.getElementById('zoom-day').onclick = () => setZoom('day');
+document.getElementById('order-btn').onclick = (e) => {
+  state.descending = !state.descending;
+  e.target.textContent = state.descending ? '↓' : '↑';
+  loadDateBuckets();
+};
+document.getElementById('refresh-btn').onclick = init;
+
+async function init() {
+  await pickWorkspace();
+  await loadSubjects();
+  await loadDateBuckets();
+}
+init().catch(e => console.error('init failed:', e));
+</script>
+</body>
+</html>
