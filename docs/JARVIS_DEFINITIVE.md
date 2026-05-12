@@ -1,8 +1,11 @@
 # JARVIS 절대문서
 
 > 이 문서 하나로 자비스의 모든 것을 안다.
-> 최종 갱신: 2026-04-19 (fact_episodes M:N + 현재 활성 로드맵 반영)
+> 최종 갱신: 2026-05-07 (비전 재정의 — git + 노션 스타일 위키)
 > 상태: 초안 — 빈 곳을 채워나가며 확정
+
+> ⚠️ **§1~§13 본문은 2026-04-19 이전 비전 (AI 중심 메모리 서버) 기준으로 작성되어 있음**. 본문 정비는 후속 작업.
+> 현재 활성 비전은 §14 활성 로드맵 + `research/2026-05-07-vision-llm-wiki.md` 참조.
 
 ---
 
@@ -820,27 +823,32 @@ MCP 메모리 서버는 4개 아키텍처 캠프로 나뉜다:
 
 ## 14. 구현 Phase
 
-### 현재 활성 로드맵 (2026-04-19 이후)
+### 현재 활성 로드맵 (2026-05-07 비전 재정의 후)
 
-**현황**: MVP 단계 넘음. 4축 네비게이션(`explore`/`recall`/`follow`/`deep`) + 2-stage 회수 + fact_episodes M:N 인프라까지 구현. Q1-Q3 회귀로 재구성 기능 검증. 남은 본질적 과제는 **품질**(추출·dedup)이며 자동 수집은 사실상 설정 문제.
+> **2026-04-19 로드맵은 폐기됨** — 자동 정합성(시맨틱 dedup, predicate_type 등) 중심 품질 작업이었으나, 비전 재정의로 우선순위 낮아짐. 폐기된 로드맵 원문은 git 히스토리 (`bf07aed`)에 보존.
 
-**원칙 (2026-04-19 결정)**: 품질 먼저, 자동 수집은 뒤. 쓰레기 데이터 자동 수집은 가치 없음.
+**새 비전 한 줄**: 자비스 = AI 대화의 git + 노션 스타일 위키. 사용자가 명시적으로 push, 원문 보존 + 의미 검색 + 시간/주제 색인 + 시각화. (전문: `research/2026-05-07-vision-llm-wiki.md`)
 
-| 우선순위 | 작업 | 기간 | 리스크 | 참조 |
-|---|---|---|---|---|
-| **1** | 저위험 교정 — `_resolve_predicate` E5 비대칭 프리픽스 버그, entity-level predicate 캐싱, `_check_nli_contradictions` top-10 제한 | 1~2일 | 낮음 | `research/2026-04-19-semantic-fact-dedup.md` §7.Phase1 |
-| **2** | 시맨틱 dedup + 추출 품질 (분리 불가 한 덩어리) — `predicate_type: STATE/ATTRIBUTE/RELATION` 추출 프롬프트 추가, `FactHint` 스키마 필드, `store_fact`에 cos+NLI 3-way 결정 트리, ATTRIBUTE predicate 임계값 0.92 상향 | 3~5일 | 중간 | 같은 문서 §4.3, §7.Phase2 |
-| **3** | 모델 보강 — `FactRelation(from,to,kind)` 테이블 (`refines`, `supersedes` 명시), `KnowledgeFact.fact_embedding` 컬럼+HNSW, recall refine chain 필터 | 5~7일 | 중간 | 같은 문서 §7.Phase3 |
-| **4** | 검증 — 100쌍 수동 라벨셋, 임계값 grid search, 성공 기준: 기존 207 fact 재처리 시 dedup ≥ 15건 / false merge < 3% | 2~3일 | 낮음 | 같은 문서 §7.Phase4 |
-| **5** | 자동 수집 안내 — MCP `store_memory` 설명 / README에 Claude Code `Stop` 훅 설정 가이드. 코드 변경 없음 | ≈0일 | 낮음 | Path A 참조 (§3) |
+**현황**: 백엔드 회상 기능 작동 (Q1-Q3 회귀 통과). 트리플/dedup 인프라는 보조 색인으로 격하. 새 작업의 핵심은 **턴 단위 + 주제 트리 + 시간 zoom + 시각화**.
 
-**명시적으로 안 하는 것들 (우선순위 낮음)**:
-- `follow_relation`/`explore_topic` 추가 튜닝 — 이미 쓸만함
-- Web UI — 단일 사용자 시점 CLI/MCP로 충분
-- GCP 배포 — 로컬 검증 부족
-- 전체 91개 트랜스크립트 재시딩 — 품질 파이프라인 안정화 전엔 돈낭비
+| 우선순위 | 작업 | 기간 | 참조 |
+|---|---|---|---|
+| **1** | 데이터 모델 확장 — `entities.parent_id`+`summary` 컬럼, `turns` 테이블, `turn_subjects` M:N, 기존 6 episodes → turns 마이그레이션 | 3~4일 | 비전 §4, §7.1 |
+| **2** | 새 store_memory 워크플로우 — 턴 배열 + 주제 분류 제안 + 사용자 컨펌. "어디까지 올라가있어?" 메타 쿼리 | 2~3일 | 비전 §5, §7.2 |
+| **3** | 회수 API — `/timeline?from=&to=`, `/subject/{id}/feed`, `/subject/{id}/tree`. 기존 search_passages에 subject 필터 옵션 | 1~2일 | 비전 §7.3 |
+| **4** | 일/월/년 zoom + reflect 흐름 — "오늘 정리해" 명령에 day-level 요약 생성. 월/년 집계 | 2~3일 | 비전 §7.4 |
+| **5** | 웹 UI MVP — 노션 스타일 사이드바 트리 + 페이지 본문 (시간순 또는 주제별 줄글) + 검색 박스 | 1~2주 | 비전 §3, §7.5 |
+| **6** | (선택) 자동 정합성 → 힌트로 — 자동 supersede/dedup/NLI 끄고 사용자에게 힌트만 제공 | 2~3일 | 비전 §7.6 |
 
-**직전 완료** (2026-04-19 세션): fact_episodes M:N 마이그레이션, store.py dedup(byte-exact), recall.py `episode_count` 노출. 실측에서 dedup 효과 미미 → 시맨틱 dedup이 우선순위 2의 이유.
+**명시적으로 안 하는 것들**:
+- ❌ 전체 91개 트랜스크립트 재시딩 — 새 데이터 모델 안정 전엔 무의미
+- ❌ 시맨틱 dedup 깊은 튜닝 — 우선순위 낮아짐, 폐기 로드맵 참조
+- ❌ 자동 수집 훅 (Path A/B/C) — "올려" 명령으로 대체
+- ❌ recall_memory 트리플 회상 최적화 — 메인 회상은 search_passages
+
+**직전 완료** (2026-04-19 세션): fact_episodes M:N, store.py byte-exact dedup, recall.py `episode_count`. 코드는 보존하되 비전 변경으로 보조 색인으로 의미 격하.
+
+**비전 변경의 핵심 깨달음** (2026-05-07): 자비스의 1차 사용자가 AI가 아니라 **사용자 본인**임을 인정. 캡스톤 보고서 작성 시점에 도달한 통찰. AI 자동 호출 의존이 사라지면 자동 정합성 강제 필요도 줄어듦. git처럼 사용자가 명시적으로 push하고 양쪽 진술 모두 보존.
 
 ---
 
