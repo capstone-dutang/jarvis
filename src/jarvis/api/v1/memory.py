@@ -346,12 +346,19 @@ async def api_ingest_transcript(
     if request.source_path:
         metadata["source_path"] = request.source_path
 
+    # Merge AI-generated summary/keywords into metadata for retrievability
+    if request.summary:
+        metadata["summary"] = request.summary
+    if request.keywords:
+        metadata["keywords"] = request.keywords
+
     episode, turn_count, is_dup = await _ingest(
         db, request.workspace_id, turn_dicts,
         session_id=request.session_id,
         provider=request.provider,
-        title=request.title,
+        title=request.title or request.summary[:200],  # title fallback to summary head
         metadata=metadata,
+        raw_content=request.raw_content,
     )
     await db.commit()
     return IngestTranscriptResponse(

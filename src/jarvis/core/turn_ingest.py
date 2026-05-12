@@ -69,6 +69,16 @@ async def get_or_create_session(
     return sess
 
 
+def _is_meta_episode(turns: list[dict]) -> bool:
+    """DEPRECATED — kept for backward compat. Always returns False.
+
+    Reason: heuristic filtering creates false positives (short user messages,
+    valid one-line requests like "도커 먼저 해줘"). Model judgment via claude -p
+    handles meta/irrelevant episodes correctly via empty subjects array.
+    """
+    return False
+
+
 async def ingest_transcript(
     db: AsyncSession,
     workspace_id: uuid.UUID,
@@ -77,17 +87,28 @@ async def ingest_transcript(
     provider: str = "unknown",
     title: str = "",
     metadata: dict[str, Any] | None = None,
+    skip_meta: bool = True,
+    raw_content: str | None = None,
 ) -> tuple[Episode, int, bool]:
     """Ingest one transcript as Episode + Turn rows.
 
-    `turns` is a list of dicts: {sequence, role, text, timestamp}.
+    `turns` is a list of dicts: {sequence, role, text, timestamp} — typically cleaned.
+    `raw_content` (optional): full untruncated original (jsonl raw or paste). Stored
+        in episodes.content for deep-recall escape hatch. Self-contained cloud
+        backup — no dependency on user disk.
     Returns (episode, turn_count, is_duplicate).
-    is_duplicate=True if content_hash matched existing → no new rows created.
     """
     if not turns:
         raise ValueError("turns must be non-empty")
 
-    content = _build_episode_content(turns)
+    is_meta = bool(skip_meta and _is_meta_episode(turns))
+    if is_meta:
+        logger.info("Marking meta episode (provider=%s, turn_count=%d)", provider, len(turns))
+        metadata = dict(metadata or {})
+        metadata["is_meta"] = True
+
+    # Episode.content: prefer raw (full untruncated). If absent, fall back to cleaned turns.
+    content = raw_content if raw_content else _build_episode_content(turns)
     content_hash = _compute_content_hash(content)
 
     # Dedup by content_hash

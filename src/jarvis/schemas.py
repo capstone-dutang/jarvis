@@ -347,7 +347,10 @@ class IngestTranscriptRequest(BaseModel):
     source_session_id: str = Field(default="", description="External session id (Claude Code etc.) for traceability")
     source_path: str = Field(default="", description="Source file path for traceability")
     title: str = Field(default="")
-    turns: list[TurnInput] = Field(..., min_length=1)
+    summary: str = Field(default="", description="AI-written episode summary (1-3 sentences). For UI overview + recall index.")
+    keywords: list[str] = Field(default_factory=list, description="5-10 keywords/entities. For keyword-based search index.")
+    turns: list[TurnInput] = Field(..., min_length=1, description="Cleaned turns for UI/recall")
+    raw_content: str | None = Field(default=None, description="Full raw transcript. Cloud-resident backup for deep recall.")
     metadata: dict | None = None
 
 
