@@ -437,3 +437,130 @@ class ClassifyTurnsResponse(BaseModel):
     created_subjects: int
     linked_turns: int
     skipped_duplicate_links: int = 0
+
+
+# ── Retrieval API (P3 — 줄글 회수) ──
+
+
+class TurnView(BaseModel):
+    turn_id: uuid.UUID
+    episode_id: uuid.UUID
+    sequence: int
+    role: str
+    text: str
+    timestamp: datetime
+    subjects: list[uuid.UUID] = Field(default_factory=list, description="Linked subject IDs")
+
+
+class TimelineRequest(BaseModel):
+    workspace_id: uuid.UUID
+    date_from: datetime | None = None  # ISO datetime, inclusive
+    date_to: datetime | None = None    # ISO datetime, exclusive
+    descending: bool = True            # newest first by default per UI spec
+    limit: int = Field(default=500, ge=1, le=5000)
+    offset: int = Field(default=0, ge=0)
+
+
+class TimelineResponse(BaseModel):
+    turns: list[TurnView]
+    total_turns: int
+    has_more: bool = False
+
+
+class SubjectFeedRequest(BaseModel):
+    workspace_id: uuid.UUID
+    subject_id: uuid.UUID
+    include_descendants: bool = True  # include sub-subjects too
+    date_from: datetime | None = None
+    date_to: datetime | None = None
+    descending: bool = True
+    limit: int = Field(default=500, ge=1, le=5000)
+    offset: int = Field(default=0, ge=0)
+
+
+class SubjectFeedResponse(BaseModel):
+    subject_id: uuid.UUID
+    subject_name: str
+    turns: list[TurnView]
+    total_turns: int
+    has_more: bool = False
+
+
+class SubjectTreeNode(BaseModel):
+    subject_id: uuid.UUID
+    name: str
+    turn_count: int
+    children: list["SubjectTreeNode"] = Field(default_factory=list)
+
+
+class SubjectTreeRequest(BaseModel):
+    workspace_id: uuid.UUID
+
+
+class SubjectTreeResponse(BaseModel):
+    roots: list[SubjectTreeNode]
+    total_subjects: int
+
+
+# ── Reflect & zoom summaries (P4) ──
+
+
+class DailySummaryInput(BaseModel):
+    subject_id: uuid.UUID
+    date: str  # YYYY-MM-DD
+    summary: str
+    turn_count: int = 0
+
+
+class SaveSummariesRequest(BaseModel):
+    """AI sends summaries after reflecting on a day's turns.
+
+    Each summary is for (subject, date). Upsert: replace if (workspace, subject, date)
+    already exists.
+    """
+    workspace_id: uuid.UUID
+    summaries: list[DailySummaryInput]
+
+
+class SaveSummariesResponse(BaseModel):
+    upserted: int
+
+
+class GetSummariesRequest(BaseModel):
+    """Read summaries in date range. Optionally filtered by subject."""
+    workspace_id: uuid.UUID
+    date_from: str | None = None  # YYYY-MM-DD
+    date_to: str | None = None    # YYYY-MM-DD (exclusive)
+    subject_id: uuid.UUID | None = None
+
+
+class SummaryBrief(BaseModel):
+    summary_id: uuid.UUID
+    subject_id: uuid.UUID
+    subject_name: str
+    date: str
+    summary: str
+    turn_count: int
+
+
+class GetSummariesResponse(BaseModel):
+    summaries: list[SummaryBrief]
+    total: int
+
+
+class PendingReflectsRequest(BaseModel):
+    """Which (date, subject) pairs have turns but no summary yet?"""
+    workspace_id: uuid.UUID
+    date_from: str | None = None
+    date_to: str | None = None
+
+
+class PendingReflectItem(BaseModel):
+    date: str
+    subject_id: uuid.UUID
+    subject_name: str
+    turn_count: int
+
+
+class PendingReflectsResponse(BaseModel):
+    pending: list[PendingReflectItem]

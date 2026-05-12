@@ -27,6 +27,8 @@ from jarvis.schemas import (
     FactBriefResponse,
     FollowRelationRequest,
     FollowRelationResponse,
+    GetSummariesRequest,
+    GetSummariesResponse,
     IngestTranscriptRequest,
     IngestTranscriptResponse,
     InitializeMemoryRequest,
@@ -34,15 +36,29 @@ from jarvis.schemas import (
     ListSubjectsRequest,
     ListSubjectsResponse,
     PassageHitResponse,
+    PendingReflectItem,
+    PendingReflectsRequest,
+    PendingReflectsResponse,
     RecallMemoryRequest,
     RecallMemoryResponse,
     RelatedNodeResponse,
+    SaveSummariesRequest,
+    SaveSummariesResponse,
     SearchPassagesRequest,
     SearchPassagesResponse,
     StoreMemoryRequest,
     StoreMemoryResponse,
     SubjectBrief,
+    SubjectFeedRequest,
+    SubjectFeedResponse,
+    SubjectTreeNode,
+    SubjectTreeRequest,
+    SubjectTreeResponse,
+    SummaryBrief,
+    TimelineRequest,
+    TimelineResponse,
     TopicMapResponse,
+    TurnView,
     UploadStatusRequest,
     UploadStatusResponse,
     UploadTranscriptRequest,
@@ -399,3 +415,141 @@ async def api_classify_turns(
     )
     await db.commit()
     return ClassifyTurnsResponse(**info)
+
+
+# ── Retrieval (P3 — 줄글 회수) ──
+
+
+@router.post("/timeline", response_model=TimelineResponse)
+async def api_timeline(
+    request: TimelineRequest,
+    db: AsyncSession = Depends(get_session),
+) -> TimelineResponse:
+    """Turns in time range, newest-first by default. Used for day/week/month views."""
+    from jarvis.core.retrieval import get_timeline
+
+    turns, total = await get_timeline(
+        db, request.workspace_id,
+        date_from=request.date_from, date_to=request.date_to,
+        descending=request.descending,
+        limit=request.limit, offset=request.offset,
+    )
+    return TimelineResponse(
+        turns=[TurnView(**t) for t in turns],
+        total_turns=total,
+        has_more=(request.offset + len(turns)) < total,
+    )
+
+
+@router.post("/subject-feed", response_model=SubjectFeedResponse)
+async def api_subject_feed(
+    request: SubjectFeedRequest,
+    db: AsyncSession = Depends(get_session),
+) -> SubjectFeedResponse:
+    """Turns linked to a subject (and descendants), ordered by time."""
+    from jarvis.core.retrieval import get_subject_feed
+
+    subject_name, turns, total = await get_subject_feed(
+        db, request.workspace_id, request.subject_id,
+        include_descendants=request.include_descendants,
+        date_from=request.date_from, date_to=request.date_to,
+        descending=request.descending,
+        limit=request.limit, offset=request.offset,
+    )
+    return SubjectFeedResponse(
+        subject_id=request.subject_id,
+        subject_name=subject_name,
+        turns=[TurnView(**t) for t in turns],
+        total_turns=total,
+        has_more=(request.offset + len(turns)) < total,
+    )
+
+
+def _build_tree(node_dict: dict) -> SubjectTreeNode:
+    return SubjectTreeNode(
+        subject_id=node_dict["subject_id"],
+        name=node_dict["name"],
+        turn_count=node_dict["turn_count"],
+        children=[_build_tree(c) for c in node_dict.get("children", [])],
+    )
+
+
+@router.post("/subject-tree", response_model=SubjectTreeResponse)
+async def api_subject_tree(
+    request: SubjectTreeRequest,
+    db: AsyncSession = Depends(get_session),
+) -> SubjectTreeResponse:
+    """Hierarchical subject tree for sidebar rendering."""
+    from jarvis.core.retrieval import get_subject_tree
+
+    roots, total = await get_subject_tree(db, request.workspace_id)
+    return SubjectTreeResponse(
+        roots=[_build_tree(r) for r in roots],
+        total_subjects=total,
+    )
+
+
+# ── Reflect & summaries (P4) ──
+
+
+@router.post("/save-summaries", response_model=SaveSummariesResponse)
+async def api_save_summaries(
+    request: SaveSummariesRequest,
+    db: AsyncSession = Depends(get_session),
+) -> SaveSummariesResponse:
+    """Upsert (date × subject) summaries that the AI client generated."""
+    from jarvis.core.reflect import save_summaries
+
+    items = [
+        {
+            "subject_id": s.subject_id,
+            "date": s.date,
+            "summary": s.summary,
+            "turn_count": s.turn_count,
+        }
+        for s in request.summaries
+    ]
+    count = await save_summaries(db, request.workspace_id, items)
+    await db.commit()
+    return SaveSummariesResponse(upserted=count)
+
+
+@router.post("/summaries", response_model=GetSummariesResponse)
+async def api_get_summaries(
+    request: GetSummariesRequest,
+    db: AsyncSession = Depends(get_session),
+) -> GetSummariesResponse:
+    """Fetch summaries in date range (optionally subject-filtered)."""
+    from jarvis.core.reflect import _parse_date, get_summaries
+
+    items = await get_summaries(
+        db, request.workspace_id,
+        date_from=_parse_date(request.date_from),
+        date_to=_parse_date(request.date_to),
+        subject_id=request.subject_id,
+    )
+    return GetSummariesResponse(
+        summaries=[SummaryBrief(**i) for i in items],
+        total=len(items),
+    )
+
+
+@router.post("/pending-reflects", response_model=PendingReflectsResponse)
+async def api_pending_reflects(
+    request: PendingReflectsRequest,
+    db: AsyncSession = Depends(get_session),
+) -> PendingReflectsResponse:
+    """Find (date, subject) pairs with turns but no summary yet.
+
+    Used by AI client when user says '오늘 정리해' to know what to summarize.
+    """
+    from jarvis.core.reflect import _parse_date, get_pending_reflects
+
+    items = await get_pending_reflects(
+        db, request.workspace_id,
+        date_from=_parse_date(request.date_from),
+        date_to=_parse_date(request.date_to),
+    )
+    return PendingReflectsResponse(
+        pending=[PendingReflectItem(**i) for i in items],
+    )
