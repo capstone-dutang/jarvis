@@ -19,14 +19,20 @@ from jarvis.models.tables import Entity, Episode, KnowledgeFact, Workspace
 from jarvis.schemas import (
     AnalyzeGapsRequest,
     AnalyzeGapsResponse,
+    ClassifyTurnsRequest,
+    ClassifyTurnsResponse,
     EpisodeExcerptRequest,
     EpisodeExcerptResponse,
     ExploreTopicRequest,
     FactBriefResponse,
     FollowRelationRequest,
     FollowRelationResponse,
+    IngestTranscriptRequest,
+    IngestTranscriptResponse,
     InitializeMemoryRequest,
     InitializeMemoryResponse,
+    ListSubjectsRequest,
+    ListSubjectsResponse,
     PassageHitResponse,
     RecallMemoryRequest,
     RecallMemoryResponse,
@@ -35,7 +41,10 @@ from jarvis.schemas import (
     SearchPassagesResponse,
     StoreMemoryRequest,
     StoreMemoryResponse,
+    SubjectBrief,
     TopicMapResponse,
+    UploadStatusRequest,
+    UploadStatusResponse,
     UploadTranscriptRequest,
     UploadTranscriptResponse,
 )
@@ -289,3 +298,104 @@ async def api_analyze_gaps(
         gap_count=len(gaps.gaps),
         gaps=gap_candidates,
     )
+
+
+# ── Raw transcript ingest (2026-05-07 비전) ──
+
+
+@router.post("/ingest-transcript", response_model=IngestTranscriptResponse)
+async def api_ingest_transcript(
+    request: IngestTranscriptRequest,
+    db: AsyncSession = Depends(get_session),
+) -> IngestTranscriptResponse:
+    """Ingest raw transcript as Episode + Turn rows.
+
+    No extraction, no subject classification — pure mechanical ingest.
+    Subject classification happens later via /propose-subjects + /confirm-subjects.
+    """
+    from jarvis.core.turn_ingest import ingest_transcript as _ingest
+
+    turn_dicts = [
+        {
+            "sequence": t.sequence,
+            "role": t.role,
+            "text": t.text,
+            "timestamp": t.timestamp,
+        }
+        for t in request.turns
+    ]
+    metadata = dict(request.metadata or {})
+    if request.source_session_id:
+        metadata["external_session_id"] = request.source_session_id
+    if request.source_path:
+        metadata["source_path"] = request.source_path
+
+    episode, turn_count, is_dup = await _ingest(
+        db, request.workspace_id, turn_dicts,
+        session_id=request.session_id,
+        provider=request.provider,
+        title=request.title,
+        metadata=metadata,
+    )
+    await db.commit()
+    return IngestTranscriptResponse(
+        episode_id=episode.id,
+        session_id=episode.session_id,
+        turn_count=turn_count,
+        is_duplicate=is_dup,
+    )
+
+
+@router.post("/upload-status", response_model=UploadStatusResponse)
+async def api_upload_status(
+    request: UploadStatusRequest,
+    db: AsyncSession = Depends(get_session),
+) -> UploadStatusResponse:
+    """How far up are we? — meta query for 'git log -1' equivalent."""
+    from jarvis.core.turn_ingest import get_upload_status
+
+    info = await get_upload_status(db, request.workspace_id)
+    return UploadStatusResponse(
+        workspace_id=request.workspace_id,
+        total_episodes=info["total_episodes"],
+        total_turns=info["total_turns"],
+        earliest_episode_at=info["earliest_episode_at"],
+        latest_episode_at=info["latest_episode_at"],
+        distinct_subjects=info["distinct_subjects"],
+    )
+
+
+@router.post("/subjects", response_model=ListSubjectsResponse)
+async def api_list_subjects(
+    request: ListSubjectsRequest,
+    db: AsyncSession = Depends(get_session),
+) -> ListSubjectsResponse:
+    """List existing subjects in the workspace.
+
+    AI calls this before proposing subject classification to user, so it knows
+    what already exists (avoids creating duplicate top-level subjects).
+    """
+    from jarvis.core.subjects import list_subjects
+
+    subjects = await list_subjects(db, request.workspace_id, top_level_only=request.top_level_only)
+    return ListSubjectsResponse(
+        subjects=[SubjectBrief(**s) for s in subjects],
+        total=len(subjects),
+    )
+
+
+@router.post("/classify-turns", response_model=ClassifyTurnsResponse)
+async def api_classify_turns(
+    request: ClassifyTurnsRequest,
+    db: AsyncSession = Depends(get_session),
+) -> ClassifyTurnsResponse:
+    """Confirmed turn → subject assignments. Creates new subjects + links."""
+    from jarvis.core.subjects import classify_turns
+
+    info = await classify_turns(
+        db, request.workspace_id,
+        existing_links=request.existing_links,
+        new_subjects=request.new_subjects,
+    )
+    await db.commit()
+    return ClassifyTurnsResponse(**info)

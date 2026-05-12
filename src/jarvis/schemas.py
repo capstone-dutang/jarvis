@@ -328,3 +328,112 @@ class FollowRelationResponse(BaseModel):
     total_neighbors: int
     neighbors: list[RelatedNodeResponse]
     relation_type_counts: dict[str, int] = Field(default_factory=dict)
+
+
+# ── Raw transcript ingest (2026-05-07 비전) ──
+
+
+class TurnInput(BaseModel):
+    sequence: int = Field(..., ge=0)
+    role: str = Field(..., pattern="^(user|assistant|system|tool)$")
+    text: str
+    timestamp: datetime
+
+
+class IngestTranscriptRequest(BaseModel):
+    workspace_id: uuid.UUID
+    session_id: uuid.UUID | None = None  # if None, create new session
+    provider: str = Field(default="unknown")
+    source_session_id: str = Field(default="", description="External session id (Claude Code etc.) for traceability")
+    source_path: str = Field(default="", description="Source file path for traceability")
+    title: str = Field(default="")
+    turns: list[TurnInput] = Field(..., min_length=1)
+    metadata: dict | None = None
+
+
+class IngestTranscriptResponse(BaseModel):
+    episode_id: uuid.UUID
+    session_id: uuid.UUID
+    turn_count: int
+    is_duplicate: bool = False  # True if content_hash matched existing episode
+
+
+class UploadStatusRequest(BaseModel):
+    workspace_id: uuid.UUID
+
+
+class UploadStatusResponse(BaseModel):
+    workspace_id: uuid.UUID
+    total_episodes: int
+    total_turns: int
+    earliest_episode_at: datetime | None = None
+    latest_episode_at: datetime | None = None
+    distinct_subjects: int = 0  # top-level subjects (parent_id IS NULL)
+
+
+# ── Subject classification (proposal + confirm) ──
+
+
+class SubjectProposal(BaseModel):
+    turn_id: uuid.UUID
+    existing_subject_ids: list[uuid.UUID] = Field(default_factory=list)
+    new_subject_names: list[str] = Field(default_factory=list, description="New top-level subjects to create")
+    new_sub_subjects: list[dict] = Field(
+        default_factory=list,
+        description="New sub-subjects: [{'name': str, 'parent_id': UUID}, ...]",
+    )
+
+
+class ConfirmSubjectsRequest(BaseModel):
+    workspace_id: uuid.UUID
+    proposals: list[SubjectProposal]
+
+
+class ConfirmSubjectsResponse(BaseModel):
+    created_subjects: int
+    linked_turns: int
+
+
+class SubjectBrief(BaseModel):
+    subject_id: uuid.UUID
+    name: str
+    parent_id: uuid.UUID | None = None
+    parent_name: str | None = None
+    turn_count: int = 0
+
+
+class ListSubjectsRequest(BaseModel):
+    workspace_id: uuid.UUID
+    top_level_only: bool = True  # if True, only parent_id IS NULL
+
+
+class ListSubjectsResponse(BaseModel):
+    subjects: list[SubjectBrief]
+    total: int
+
+
+class ClassifyTurnsRequest(BaseModel):
+    """Single-shot turn → subject classification, with optional new subject creation.
+
+    AI client builds this after consulting /subjects and confirming with user.
+    Each item links a list of turn_ids to either an existing subject_id OR a
+    new subject (name + optional parent_id). The server creates new subjects
+    as needed and writes turn_subjects rows.
+    """
+    workspace_id: uuid.UUID
+    # Existing-subject links
+    existing_links: list[dict] = Field(
+        default_factory=list,
+        description="[{'subject_id': UUID, 'turn_ids': [UUID, ...]}, ...]",
+    )
+    # New-subject creates + links in one shot
+    new_subjects: list[dict] = Field(
+        default_factory=list,
+        description="[{'name': str, 'parent_id': UUID | None, 'turn_ids': [UUID, ...]}, ...]",
+    )
+
+
+class ClassifyTurnsResponse(BaseModel):
+    created_subjects: int
+    linked_turns: int
+    skipped_duplicate_links: int = 0
