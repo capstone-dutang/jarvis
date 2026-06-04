@@ -9,7 +9,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import func
 
-from jarvis.core.entity_resolution import compute_fuzzy_ratio, hybrid_score, is_cross_lingual, normalize_name
+from jarvis.core.entity_resolution import normalize_name
 from jarvis.core.quote_verification import verify_quote
 from jarvis.models.tables import (
     Embedding,
@@ -111,18 +111,23 @@ async def resolve_entity(
     workspace_id: uuid.UUID,
     hint: EntityHint,
 ) -> tuple[Entity, bool]:
-    """Resolve entity hint to existing or new entity.
+    """Resolve entity hint — Stage 1 only (diary model).
 
     Returns (entity, is_new).
-    3-stage pipeline based on: research/multilingual-kg lines 48-93
 
-    Stage 1: Normalize + alias lookup
-    Stage 2: pgvector cosine > 0.75 top-10 candidates (on Entity.name_embedding)
-    Stage 3: Hybrid scoring (fuzzy + cosine) on candidates only
+    Stage 1 covers:
+      - NFKC + lowercase normalization on entities.name_normalized
+      - Hard-coded cross-lingual aliases (CROSS_LINGUAL_ALIASES, ALIAS_DICT)
+      - User-/AI-asserted aliases via the entity_aliases table
+
+    Embedding-based auto-merge (Stage 2/3 of the prior KG design) is disabled.
+    Diary semantics: only merge when the user or AI explicitly asserts two
+    names are the same. Surface-similar names like "MMR" vs "MMR scoring"
+    stay distinct unless an alias is recorded.
     """
     normalized = normalize_name(hint.name)
 
-    # Stage 1: Exact normalized match
+    # Stage 1a: Exact normalized match on entities.name_normalized
     result = await db.execute(
         select(Entity).where(
             Entity.workspace_id == workspace_id,
@@ -134,73 +139,22 @@ async def resolve_entity(
         logger.info("Entity exact match: '%s' → existing id=%s", hint.name, existing.id)
         return existing, False
 
-    # Stage 2: Embedding candidate retrieval via pgvector
-    # Based on: research/multilingual-kg lines 66-76
-    # Uses query: prefix for search vector, name_embedding uses passage: prefix
-    # — E5's intended asymmetric usage (query searches against stored passages).
-    candidates: list[tuple[Entity, float]] = []
-    try:
-        from jarvis.core.embedding import embed_text
-
-        name_vec = embed_text(normalized)
-        result = await db.execute(
-            text("""
-                SELECT id, name, name_normalized,
-                       1 - (name_embedding <=> cast(:vec as vector)) AS cos_sim
-                FROM entities
-                WHERE workspace_id = :ws
-                  AND name_embedding IS NOT NULL
-                  AND 1 - (name_embedding <=> cast(:vec as vector)) > 0.75
-                ORDER BY name_embedding <=> cast(:vec as vector)
-                LIMIT 10
-            """),
-            {"ws": str(workspace_id), "vec": str(name_vec)},
-        )
-        rows = result.fetchall()
-        for row in rows:
-            entity_result = await db.execute(select(Entity).where(Entity.id == row[0]))
-            entity = entity_result.scalar_one_or_none()
-            if entity:
-                candidates.append((entity, float(row[3])))
-    except Exception:
-        # Fallback: if embedding not available, load all entities (Phase 1 compat)
-        result = await db.execute(select(Entity).where(Entity.workspace_id == workspace_id))
-        all_entities = result.scalars().all()
-        candidates = [(e, 0.0) for e in all_entities]
-
-    # Stage 3: Hybrid scoring on candidates
-    best_match: Entity | None = None
-    best_score = 0.0
-
-    for candidate, cosine_sim in candidates:
-        fuzzy_ratio = compute_fuzzy_ratio(normalized, candidate.name_normalized)
-        cross = is_cross_lingual(normalized, candidate.name_normalized)
-        score = hybrid_score(fuzzy_ratio, cosine_sim, cross)
-
-        if score > best_score:
-            best_score = score
-            best_match = candidate
-
-    # Threshold decisions (definitive doc Section 7-5)
-    if best_match and best_score >= 0.92:
-        logger.info("Entity resolved: '%s' → '%s' (score=%.3f)", hint.name, best_match.name, best_score)
-        return best_match, False
-
-    if best_match and best_score >= 0.85:
-        # ≥0.85: merge + log. Add original name to aliases for future Stage 1 lookup.
-        logger.info("Entity resolved (mid-tier merge): '%s' → '%s' (score=%.3f)", hint.name, best_match.name, best_score)
-        if best_match.aliases is None:
-            best_match.aliases = []
-        if hint.name not in best_match.aliases and hint.name != best_match.name:
-            best_match.aliases.append(hint.name)
-        return best_match, False
-
-    if best_match and best_score >= 0.78:
-        # ≥0.78: review candidate — log warning but create new entity
-        logger.warning(
-            "Entity review candidate: '%s' ≈ '%s' (score=%.3f) — not auto-merged",
-            hint.name, best_match.name, best_score,
-        )
+    # Stage 1b: Explicit alias match via entity_aliases table
+    alias_lookup = await db.execute(
+        text("""
+            SELECT entity_id FROM entity_aliases
+            WHERE workspace_id = :ws AND lower(alias) = :alias
+            LIMIT 1
+        """),
+        {"ws": str(workspace_id), "alias": normalized},
+    )
+    alias_row = alias_lookup.fetchone()
+    if alias_row:
+        entity_result = await db.execute(select(Entity).where(Entity.id == alias_row[0]))
+        aliased = entity_result.scalar_one_or_none()
+        if aliased:
+            logger.info("Entity alias match: '%s' → '%s' (via entity_aliases)", hint.name, aliased.name)
+            return aliased, False
 
     # Create new entity
     try:
@@ -244,71 +198,13 @@ async def _resolve_predicate(
     entity_id: uuid.UUID,
     predicate: str,
 ) -> str:
-    """Resolve predicate to existing one if semantically similar.
+    """Resolve predicate — exact match only (diary model).
 
-    Same pattern as entity resolution but for predicates:
-    1. Exact match → use as-is
-    2. Embedding similarity → if cosine > 0.85, use existing predicate
-    3. No match → use the new predicate as-is
-
-    This prevents supersede failures when AI uses "나이" once and "age" next time.
+    Diary semantics: AI writes facts as time-accumulating entries; do not
+    automatically collapse semantically-similar predicates ("bug_recall_fts"
+    and "bug_recall_hnsw" must remain distinct facts). Embedding-based
+    auto-mapping is disabled.
     """
-    # Get all active predicates for this entity
-    result = await db.execute(
-        select(KnowledgeFact.predicate)
-        .where(
-            KnowledgeFact.entity_id == entity_id,
-            KnowledgeFact.superseded_at.is_(None),
-        )
-        .distinct()
-    )
-    existing_predicates = [row[0] for row in result.fetchall()]
-
-    if not existing_predicates:
-        return predicate
-
-    # Exact match
-    if predicate in existing_predicates:
-        return predicate
-
-    # Fuzzy + embedding similarity
-    best_match = predicate
-    best_score = 0.0
-
-    try:
-        from jarvis.core.embedding import embed_text
-
-        pred_vec = embed_text(predicate)
-
-        for existing_pred in existing_predicates:
-            existing_vec = embed_text(existing_pred)
-            # Cosine similarity
-            import numpy as np
-
-            cos_sim = float(np.dot(pred_vec, existing_vec))
-
-            # Also check fuzzy string similarity
-            fuzzy = compute_fuzzy_ratio(predicate, existing_pred) / 100.0
-
-            # Combined score (weighted toward embedding for semantic matching)
-            score = 0.3 * fuzzy + 0.7 * cos_sim
-
-            if score > best_score:
-                best_score = score
-                best_match = existing_pred
-    except Exception:
-        # Embedding not available — fuzzy only
-        for existing_pred in existing_predicates:
-            fuzzy = compute_fuzzy_ratio(predicate, existing_pred) / 100.0
-            if fuzzy > best_score:
-                best_score = fuzzy
-                best_match = existing_pred
-
-    # Threshold: if score > 0.85, treat as same predicate
-    if best_score >= 0.85:
-        logger.info("Predicate resolved: '%s' → '%s' (score=%.3f)", predicate, best_match, best_score)
-        return best_match
-
     return predicate
 
 
@@ -326,111 +222,6 @@ def _classify_fragment_type(predicate: str) -> FragmentType:
     if any(kw in pred_lower for kw in ("relates", "depends", "uses", "관계", "의존", "사용")):
         return FragmentType.relation
     return FragmentType.fact
-
-
-async def _check_nli_contradictions(
-    db: AsyncSession,
-    workspace_id: uuid.UUID,
-    entity: Entity,
-    new_fact: KnowledgeFact,
-    resolved_predicate: str,
-) -> None:
-    """Check new fact against existing facts of the same entity using NLI.
-
-    Only runs for facts with DIFFERENT predicates (same predicate already handled by supersede).
-    Uses entity-blocking: only compare facts sharing the same entity.
-    """
-    try:
-        from jarvis.core.embedding import embed_text
-        from jarvis.core.nli_detection import ConflictType, detect_contradictions
-
-        # Get active facts for same entity, different predicate
-        result = await db.execute(
-            select(KnowledgeFact).where(
-                KnowledgeFact.entity_id == entity.id,
-                KnowledgeFact.predicate != resolved_predicate,
-                KnowledgeFact.superseded_at.is_(None),
-                KnowledgeFact.id != new_fact.id,
-            )
-        )
-        existing_facts = result.scalars().all()
-
-        if not existing_facts:
-            return
-
-        # Build fact texts and compute cosine similarities
-        new_text = f"{entity.name} {new_fact.predicate} {new_fact.object_value}"
-        new_vec = embed_text(new_text)
-
-        import numpy as np
-
-        candidates: list[tuple[str, float]] = []
-        candidate_facts: list[KnowledgeFact] = []
-        candidate_cosines: dict[str, float] = {}
-
-        for ef in existing_facts:
-            ef_text = f"{entity.name} {ef.predicate} {ef.object_value}"
-            ef_vec = embed_text(ef_text)
-            cos_sim = float(np.dot(new_vec, ef_vec))
-            # Only consider facts with meaningful semantic overlap (0.55 threshold
-            # to avoid NLI false positives on unrelated facts like "uses_workflow" vs "commit_rate")
-            if cos_sim > 0.55:
-                candidates.append((ef_text, cos_sim))
-                candidate_facts.append(ef)
-                candidate_cosines[ef_text] = cos_sim
-
-        if not candidates:
-            return
-
-        # Run NLI detection
-        nli_results = detect_contradictions(new_text, candidates)
-
-        for nli_result in nli_results:
-            matching_fact = next(
-                (cf for cf, (ct, _) in zip(candidate_facts, candidates, strict=True) if ct == nli_result.existing_fact_text),
-                None,
-            )
-            if not matching_fact:
-                continue
-
-            if nli_result.conflict_type == ConflictType.contradiction_auto:
-                # Auto supersede the contradicted fact
-                matching_fact.superseded_at = func.now()
-                matching_fact.valid_to = func.now()
-                cos_of_match = candidate_cosines.get(nli_result.existing_fact_text, 0.0)
-                logger.info(
-                    "NLI auto-supersede: '%s %s %s' contradicts '%s %s %s' (nli=%.3f, cosine=%.3f)",
-                    entity.name, new_fact.predicate, new_fact.object_value,
-                    entity.name, matching_fact.predicate, matching_fact.object_value,
-                    nli_result.contradiction, cos_of_match,
-                )
-
-            elif nli_result.conflict_type == ConflictType.contradiction_review:
-                logger.warning(
-                    "NLI review needed: '%s %s %s' may contradict '%s %s %s' (score=%.3f)",
-                    entity.name, new_fact.predicate, new_fact.object_value,
-                    entity.name, matching_fact.predicate, matching_fact.object_value,
-                    nli_result.contradiction,
-                )
-
-            elif nli_result.conflict_type == ConflictType.duplicate:
-                logger.info(
-                    "NLI duplicate detected: '%s %s %s' ≈ '%s %s %s'",
-                    entity.name, new_fact.predicate, new_fact.object_value,
-                    entity.name, matching_fact.predicate, matching_fact.object_value,
-                )
-
-            elif nli_result.conflict_type == ConflictType.refinement:
-                logger.info(
-                    "NLI refinement: '%s %s %s' refines '%s %s %s'",
-                    entity.name, new_fact.predicate, new_fact.object_value,
-                    entity.name, matching_fact.predicate, matching_fact.object_value,
-                )
-
-    except ImportError:
-        logger.debug("NLI or embedding not available, skipping contradiction check")
-    except Exception:
-        logger.exception("NLI contradiction check failed")
 
 
 async def store_fact(
@@ -484,26 +275,11 @@ async def store_fact(
             is_supersede=False,
         )
 
-    # Supersede: same (entity, predicate) but different object_value → replace state
-    result = await db.execute(
-        select(KnowledgeFact).where(
-            KnowledgeFact.entity_id == entity.id,
-            KnowledgeFact.predicate == resolved_predicate,
-            KnowledgeFact.superseded_at.is_(None),
-        )
-    )
-    existing = result.scalar_one_or_none()
+    # Diary model: do NOT supersede prior facts. Same (entity, predicate)
+    # with a different object_value is treated as a new time-ordered entry
+    # (e.g., "JARVIS deployed_on Oracle" on 3월, "JARVIS deployed_on GCP" on 4월
+    # — both remain visible, the change-of-mind itself is the information).
     is_supersede = False
-
-    if existing:
-        existing.superseded_at = func.now()
-        existing.valid_to = func.now()
-        is_supersede = True
-        logger.info(
-            "Fact superseded: %s %s '%s' → '%s'",
-            entity.name, resolved_predicate,
-            existing.object_value[:60], fact_hint.object[:60],
-        )
 
     new_fact = KnowledgeFact(
         workspace_id=workspace_id,
@@ -555,12 +331,10 @@ async def store_fact(
     )
     db.add(fragment)
 
-    # NLI contradiction detection — check against other facts of the same entity
-    # Skip if we already did predicate-level supersede (same entity + same predicate)
-    if not is_supersede:
-        await _check_nli_contradictions(
-            db, workspace_id, entity, new_fact, resolved_predicate
-        )
+    # Diary model: NLI contradiction auto-supersede is disabled. Contradictions
+    # are themselves information ("X was true on day A, ¬X was concluded on day B");
+    # both entries remain accessible. The detector function is kept for potential
+    # future "highlight conflicting beliefs" UX, but does not mutate state.
 
     return StoredFactResponse(
         fact_id=new_fact.id,
@@ -620,36 +394,6 @@ async def _store_relation(
     db.add(relation)
 
 
-async def _auto_summarize(transcript: str, max_chars: int = 2000) -> str:
-    """Generate a session summary using Claude API if available.
-
-    Falls back to first 200 chars of transcript if API is not available.
-    """
-    try:
-        import os
-
-        import anthropic
-
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-        if not api_key:
-            return transcript[:200] + "..." if len(transcript) > 200 else transcript
-
-        client = anthropic.Anthropic(api_key=api_key)
-        response = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=200,
-            temperature=0,
-            messages=[{
-                "role": "user",
-                "content": f"Summarize this conversation in 1-2 sentences. Be specific about decisions, tools, and outcomes:\n\n{transcript[:max_chars]}",
-            }],
-        )
-        return response.content[0].text
-    except Exception:
-        logger.debug("Auto-summarize unavailable, using transcript excerpt")
-        return transcript[:200] + "..." if len(transcript) > 200 else transcript
-
-
 async def store_memory(db: AsyncSession, request: StoreMemoryRequest) -> StoreMemoryResponse:
     """Full store_memory pipeline (Transaction A — synchronous).
 
@@ -663,10 +407,14 @@ async def store_memory(db: AsyncSession, request: StoreMemoryRequest) -> StoreMe
     """
     session = await get_or_create_session(db, request.workspace_id, request.session_id, request.provider)
 
-    # Auto-generate summary if not provided
+    # Vision §1 — no server-side LLM calls. If caller omitted a summary, use a
+    # plain transcript excerpt; never reach out to an inference API. Diary-mode
+    # flows enforce non-empty summary via IngestAndIndexRequest.require_index_hints,
+    # so this branch only fires for legacy /store callers.
     summary = request.conversation_summary
     if not summary.strip():
-        summary = await _auto_summarize(request.conversation_transcript)
+        transcript = request.conversation_transcript
+        summary = transcript[:200] + "..." if len(transcript) > 200 else transcript
 
     episode = await create_episode(
         db,

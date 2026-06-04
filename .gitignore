@@ -32,3 +32,15 @@ Thumbs.db
 memory/
 CLAUDE.md
 pencil-new.pen
+
+# 작업 산출물 (마이그레이션/색인/정제 스크래치 — 대화 원문/덤프 포함, 공개 금지)
+.migrate_*
+.index_*
+.cleanup_*
+.daily_*
+.diary_*
+.entity_*
+.faketurn_*
+.human_summary_*
+.playwright-mcp/
+*.dump

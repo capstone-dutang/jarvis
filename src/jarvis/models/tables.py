@@ -45,6 +45,13 @@ class EntityType(enum.StrEnum):
     preference = "preference"
     procedure = "procedure"
     other = "other"
+    # P6: episode-level topic anchors (session labels like "JARVIS > X (date)").
+    # These are excluded from wiki index / dashboard top entities / topic_map.
+    episode_topic = "episode_topic"
+    # "다룬 주제" work-themes (e.g. "Recall 품질 수복", "워크스페이스 UX 설계").
+    # Added to the DB enum earlier; the Python member must stay in sync or the
+    # ORM raises LookupError loading these rows (broke recall — 2026-06-04).
+    theme = "theme"
 
 
 class RelationType(enum.StrEnum):
@@ -89,6 +96,13 @@ class Workspace(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, server_default="active")
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Cumulative narrative summary — "지금까지 흐름" 누적. description 과 분리:
+    # description 은 정체성/목적 (수동, 잘 안 변함), cumulative_summary 는 매
+    # 일기마다 AI 가 갱신하는 흐름 요약. brief 의 sub line / recall 의 컨텍스트
+    # 가 이 컬럼을 읽어 다른 세션 AI 에게 "지난 작업" 을 전달한다.
+    cumulative_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     members: Mapped[list["WorkspaceMember"]] = relationship(back_populates="workspace")
@@ -143,6 +157,8 @@ class Episode(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)  # raw transcript
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    diary_entry: Mapped[str | None] = mapped_column(Text, nullable=True)
+    human_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     metadata_: Mapped[dict[str, object] | None] = mapped_column("metadata", JSONB, nullable=True)
     processing_status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")  # pending/processing/done/failed
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -190,6 +206,10 @@ class Entity(Base):
     parent_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("entities.id", ondelete="SET NULL"), nullable=True, index=True,
     )
+    # AI-written wiki-style article for this entity. Long-form narrative that
+    # explains what this subject is, history, current state — shown at the
+    # top of the entity modal. None ⇒ falls back to facts/relations only.
+    wiki_article: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     workspace: Mapped["Workspace"] = relationship(back_populates="entities")
@@ -355,6 +375,7 @@ class Turn(Base):
     sequence: Mapped[int] = mapped_column(nullable=False)
     role: Mapped[str] = mapped_column(String(20), nullable=False)  # user/assistant/system/tool
     text: Mapped[str] = mapped_column(Text, nullable=False)
+    cleaned_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(

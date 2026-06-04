@@ -41,11 +41,13 @@ async def save_summaries(
         await db.execute(
             text("""
                 INSERT INTO daily_subject_summaries
-                    (workspace_id, subject_id, date, summary, turn_count, updated_at)
-                VALUES (:ws, :sid, :dt, :sum, :tc, now())
+                    (workspace_id, subject_id, date, summary,
+                     turn_count, unique_turn_count, updated_at)
+                VALUES (:ws, :sid, :dt, :sum, :tc, :utc, now())
                 ON CONFLICT (workspace_id, subject_id, date) DO UPDATE
                 SET summary = EXCLUDED.summary,
                     turn_count = EXCLUDED.turn_count,
+                    unique_turn_count = EXCLUDED.unique_turn_count,
                     updated_at = now()
             """),
             {
@@ -54,6 +56,10 @@ async def save_summaries(
                 "dt": dt_obj,
                 "sum": s["summary"],
                 "tc": int(s.get("turn_count", 0)),
+                # When caller does not supply unique_turn_count, default to
+                # turn_count — keeps legacy callers correct on leaf subjects
+                # (no descendants ⇒ unique == total).
+                "utc": int(s.get("unique_turn_count", s.get("turn_count", 0))),
             },
         )
         upserted += 1
@@ -84,7 +90,7 @@ async def get_summaries(
     rows = await db.execute(
         text(f"""
             SELECT dss.id, dss.subject_id, e.name, dss.date,
-                   dss.summary, dss.turn_count
+                   dss.summary, dss.turn_count, dss.unique_turn_count
             FROM daily_subject_summaries dss
             JOIN entities e ON e.id = dss.subject_id
             WHERE {where_sql}
@@ -100,6 +106,9 @@ async def get_summaries(
             "date": r[3].isoformat() if hasattr(r[3], "isoformat") else str(r[3]),
             "summary": r[4],
             "turn_count": int(r[5]),
+            # NULL ⇒ legacy row pre-P8; fall back to turn_count so callers
+            # never see None. Backfill migration sets this for existing rows.
+            "unique_turn_count": int(r[6] if r[6] is not None else r[5]),
         }
         for r in rows.fetchall()
     ]

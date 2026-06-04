@@ -2,346 +2,2996 @@
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
-<title>JARVIS — AI 대화의 git</title>
+<title>JARVIS</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.6/dist/purify.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
 <style>
-  :root {
-    --bg: #fafaf7;
-    --panel: #ffffff;
-    --border: #e5e5e0;
-    --text: #1f1f1f;
-    --muted: #6b6b6b;
-    --accent: #2563eb;
-    --accent-soft: #dbeafe;
-    --hover: #f3f3ef;
-  }
-  * { box-sizing: border-box; }
-  html, body { margin: 0; height: 100%; font: 14px/1.5 -apple-system, "Segoe UI", "Noto Sans KR", sans-serif; color: var(--text); background: var(--bg); }
-  .app { display: grid; grid-template-columns: 240px 1fr 320px; height: 100vh; }
+:root {
+  --bg: #191919;
+  --bg-2: #1c1c1c;
+  --card: #232323;
+  --card-2: #252525;
+  --border: #2e2e2e;
+  --border-2: #3a3a3a;
+  --text: #eaeaea;
+  --text-2: #d0d0d0;
+  --text-3: #8a8a8a;
+  --accent: #6b8bd6;
+  --accent-soft: #2a3556;
+  --user-bg: #2d375a;
+  --user-border: rgba(107,139,214,0.32);
+  --user-text: #e8edfb;
+  --code-bg: rgba(0,0,0,0.28);
+  --code-text: #cdd8ee;
+  --mono: 'JetBrains Mono', ui-monospace, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans KR", sans-serif;
+  /* Polish — 추가 토큰 */
+  --border-strong: #353535;
+  --divider:       #2a2a2a;
+  --surface-2:     #262626;
+  --surface-3:     #2e2e2e;
+  /* Polish — typography & spacing tokens */
+  --font-body-1:   15px;     /* 일기 본문 */
+  --font-body-2:   13.5px;   /* 사이드바 일반 */
+  --font-meta:     11.5px;   /* 헤더 unit, 보조정보 */
+  --line-body:     1.65;     /* 본문 줄간격 */
+  --paragraph-gap: 0.7em;    /* 마크다운 p 간격 */
+  /* Tool-call tone */
+  --tool-text:     var(--text-3);
+  --tool-bg:       transparent;
+  --tool-border:   var(--border);
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; background: var(--bg); color: var(--text); font: 14px/1.5 var(--sans); }
+button, input { font-family: inherit; color: inherit; }
 
-  /* Sidebar */
-  .sidebar { background: var(--panel); border-right: 1px solid var(--border); overflow-y: auto; }
-  .sidebar h2 { font-size: 12px; text-transform: uppercase; color: var(--muted); padding: 16px 16px 8px; margin: 0; letter-spacing: 0.05em; }
-  .sidebar .controls { padding: 8px 16px; display: flex; gap: 4px; }
-  .sidebar .controls button { flex: 1; font-size: 11px; padding: 4px 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; cursor: pointer; }
-  .sidebar .controls button.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
-  .tree-node { padding: 4px 16px; cursor: pointer; user-select: none; font-size: 13px; }
-  .tree-node:hover { background: var(--hover); }
-  .tree-node.month { font-weight: 600; }
-  .tree-node.week { padding-left: 32px; color: var(--muted); }
-  .tree-node.day { padding-left: 48px; color: var(--text); }
-  .tree-node.day.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
-  .tree-node .count { float: right; font-size: 11px; color: var(--muted); }
+.app { display: grid; grid-template-rows: 56px auto auto 1fr; height: 100vh; overflow: hidden; }
 
-  /* Main */
-  .main { display: flex; flex-direction: column; overflow: hidden; }
-  .subjects-bar { padding: 12px 24px; border-bottom: 1px solid var(--border); background: var(--panel); display: flex; gap: 8px; overflow-x: auto; flex-wrap: nowrap; }
-  .chip { flex-shrink: 0; padding: 6px 14px; border: 1px solid var(--border); border-radius: 16px; background: var(--bg); cursor: pointer; font-size: 13px; }
-  .chip:hover { background: var(--hover); }
-  .chip.active { background: var(--accent); color: white; border-color: var(--accent); }
-  .chip .count { font-size: 11px; opacity: 0.7; margin-left: 4px; }
-  .body { flex: 1; overflow-y: auto; padding: 24px 32px; }
-  .empty { color: var(--muted); text-align: center; padding: 60px 20px; }
-  .turn { margin-bottom: 24px; padding: 16px 20px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; }
-  .turn .meta { font-size: 11px; color: var(--muted); margin-bottom: 8px; }
-  .turn .meta .role { padding: 2px 8px; border-radius: 4px; background: var(--bg); margin-right: 8px; font-weight: 600; }
-  .turn .meta .role.user { color: #1f1f1f; }
-  .turn .meta .role.assistant { color: var(--accent); }
-  .turn .text { word-break: break-word; }
-  .turn .text pre { background: var(--bg); padding: 12px; border-radius: 4px; overflow-x: auto; font-size: 12px; }
-  .turn .text code { background: var(--bg); padding: 1px 4px; border-radius: 3px; font-size: 12px; }
-  .turn .text blockquote { border-left: 3px solid var(--border); margin: 8px 0; padding-left: 12px; color: var(--muted); }
+/* Header */
+.header { display: flex; align-items: center; padding: 0 28px; border-bottom: 1px solid var(--border); background: var(--bg-2); gap: 24px; }
+.logo { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 800; letter-spacing: 0.02em; color: var(--text); }
+.logo::before { content: ''; width: 8px; height: 8px; background: var(--accent); border-radius: 50%; }
+.search-pill { flex: 1; max-width: 560px; margin: 0 auto; height: 32px; display: flex; align-items: center; padding: 0 14px; background: var(--card); border: 1px solid var(--border); border-radius: 999px; color: var(--text-3); gap: 8px; }
+.search-pill:focus-within { border-color: var(--accent); }
+.search-pill input { flex: 1; background: transparent; border: 0; outline: 0; color: var(--text); font-size: 13px; }
+.search-pill input::placeholder { color: var(--text-3); }
+.search-pill .kbd { font: 11px/1 var(--mono); padding: 2px 6px; border: 1px solid var(--border-2); border-radius: 4px; color: var(--text-3); }
+.header-spacer { flex: 0 1 auto; }
+.cleaned-toggle, .ws-label {
+  font: var(--font-meta)/1 var(--mono);
+  color: var(--text-3);
+  padding: 5px 11px;
+  border-radius: 6px;
+  cursor: pointer;
+  border: 1px solid var(--border-2);
+  user-select: none;
+  background: var(--bg);
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.cleaned-toggle:hover, .ws-label:hover {
+  color: var(--text); background: var(--card); border-color: var(--border-strong);
+}
+.cleaned-toggle.active { color: #e9eefb; background: var(--accent-soft); border-color: var(--accent); }
+.ws-label::after { content: ' ▾'; opacity: 0.5; font-size: 10px; }
+.ws-label .ws-name { color: var(--text); font-weight: 600; }
+.ws-label-wrap { position: relative; display: inline-block; }
+.ws-menu {
+  position: absolute; top: 100%; right: 0;
+  margin-top: 6px;
+  background: var(--bg-2); border: 1px solid var(--border-2); border-radius: 8px;
+  min-width: 240px; box-shadow: 0 8px 28px rgba(0,0,0,0.5);
+  z-index: 100; padding: 6px; display: none;
+}
+.ws-menu.open { display: block; }
+.ws-menu-item { display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; font-size: 13px; cursor: pointer; border-radius: 5px; color: var(--text-2); }
+.ws-menu-item:hover { background: var(--card); color: var(--text); }
+.ws-menu-item.active { background: var(--accent-soft); color: #e9eefb; }
+.ws-menu-item .ep-count { font: 10.5px/1 var(--mono); color: var(--text-3); }
+.ws-menu-item.active .ep-count { color: #e9eefb; opacity: 0.85; }
+/* Episode divider */
+.episode-divider {
+  display: flex; align-items: center; gap: 12px;
+  margin: 28px 0 18px;
+  color: var(--text-2);
+  font: 12px/1 var(--mono);
+  user-select: none;
+}
+.episode-divider::before, .episode-divider::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+.episode-divider .ep-date { font-size: 13px; font-weight: 700; color: var(--text); letter-spacing: 0.02em; }
+.episode-divider .ep-tag  { padding: 2px 10px; border: 1px solid var(--border-2); border-radius: 999px; background: var(--bg-2); font-size: 10.5px; color: var(--text-3); }
+.episode-divider .ep-meta { font-size: 11px; color: var(--text-3); }
+/* Header stats pill (workspace heartbeat) — num·unit·range 3단 위계 */
+.stats-pill {
+  font: 12px/1 var(--sans);
+  color: var(--text-3);
+  padding: 7px 14px;
+  border-radius: 999px; border: 1px solid var(--border-2); background: var(--bg);
+  white-space: nowrap; display: inline-flex; align-items: center; gap: 10px;
+}
+.stats-pill .sep   { color: var(--text-3); opacity: 0.4; }
+.stats-pill .num   { color: var(--text); font-weight: 700; font-size: 13px; font-family: var(--mono); }
+.stats-pill .unit  { color: var(--text-2); font-size: 11.5px; }
+.stats-pill .range { color: var(--text-3); font: var(--font-meta)/1 var(--mono); }
+.stats-pill .live  { width: 6px; height: 6px; border-radius: 50%; background: #5fb56b; box-shadow: 0 0 6px rgba(95,181,107,0.7); display: inline-block; }
+.stats-pill.loading { opacity: 0.45; }
 
-  /* Right panel */
-  .right { background: var(--panel); border-left: 1px solid var(--border); overflow-y: auto; padding: 20px 18px; }
-  .right h3 { font-size: 12px; text-transform: uppercase; color: var(--muted); margin: 0 0 12px; letter-spacing: 0.05em; }
-  .summary-card { padding: 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; margin-bottom: 12px; font-size: 13px; }
-  .summary-card .meta { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+/* Home dashboard (replaces onboarding) */
+.home-dashboard { max-width: 1100px; margin: 0 auto; padding: 22px 4px 36px; display: grid; grid-template-columns: 1fr 1fr; grid-auto-rows: auto; gap: 18px; }
+.home-card { background: var(--card); border: 1px solid var(--border-strong); border-radius: 12px; padding: 18px 20px; min-height: 180px; display: flex; flex-direction: column; }
+.home-card h3 { font-size: 12px; font-weight: 700; color: var(--text-2); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 14px; display: flex; justify-content: space-between; align-items: baseline; }
+.home-card h3 .count { font: 11px/1 var(--mono); color: var(--text-3); font-weight: 500; text-transform: none; letter-spacing: 0; }
+.home-card .empty-mini { color: var(--text-3); font-size: 12px; line-height: 1.55; padding: 16px 4px; opacity: 0.85; }
+.home-card.span-2 { grid-column: 1 / -1; }
 
-  /* Header status */
-  .status-bar { padding: 8px 16px; background: var(--bg); border-bottom: 1px solid var(--border); font-size: 11px; color: var(--muted); display: flex; justify-content: space-between; }
-  .status-bar a { color: var(--accent); text-decoration: none; cursor: pointer; }
+/* P8 — per-day pair (JARVIS + Argos side-by-side) */
+.recent-day { margin-bottom: 12px; }
+.recent-day:last-child { margin-bottom: 0; }
+.recent-day .day-label { font: 11px/1 var(--mono); color: var(--accent); margin-bottom: 6px; padding-left: 2px; letter-spacing: 0.02em; }
+.recent-day .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.recent-day .pair.single { grid-template-columns: 1fr; }
+
+.recent-row { padding: 11px 12px; background: var(--bg-2); border: 1px solid var(--border-2); border-radius: 8px; cursor: pointer; transition: border-color 0.15s; display: flex; flex-direction: column; min-height: 84px; }
+.recent-row:hover { border-color: var(--accent); }
+.recent-row.paused { background: transparent; border-style: dashed; opacity: 0.65; cursor: default; }
+.recent-row.paused:hover { border-color: var(--border-2); }
+.recent-row .head { display: flex; gap: 8px; align-items: baseline; margin-bottom: 5px; }
+.recent-row .subj { font-size: 13px; color: var(--text); font-weight: 600; }
+.recent-row .turn-n { font: 10.5px/1 var(--mono); color: var(--text-3); margin-left: auto; }
+.recent-row.paused .turn-n { color: var(--text-3); font-style: italic; }
+.recent-row .preview { font-size: 12px; color: var(--text-2); line-height: 1.5; max-height: 4.5em; overflow: hidden; white-space: pre-wrap; }
+
+.otd-row { padding: 10px 12px; background: var(--bg-2); border-left: 2px solid var(--accent); border-radius: 4px; margin-bottom: 8px; }
+.otd-row:last-child { margin-bottom: 0; }
+.otd-row .otd-meta { font: 11px/1 var(--mono); color: var(--text-3); margin-bottom: 5px; }
+.otd-row .otd-meta .days-ago { color: var(--accent); }
+.otd-row .otd-sum { font-size: 12.5px; color: var(--text-2); line-height: 1.5; max-height: 4.5em; overflow: hidden; }
+
+/* ===== Brief Card (재설계 — 3섹션 세로 적층) ===== */
+.brief-card { padding: 20px 22px 22px; }
+.brief-card > h3 { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+.brief-card .brief-head-meta { display: inline-flex; align-items: center; gap: 8px; text-transform: none; letter-spacing: 0; }
+.brief-card .brief-head-meta .count { font: 11px/1 var(--mono); color: var(--text-3); font-weight: 500; }
+
+/* ===== 시각 통일 배지 — 본문 헤더 · Brief 카드 헤더 ===== */
+.diary-ws-name {
+  color: var(--accent);
+  font-weight: 700;
+  letter-spacing: -0.005em;
+}
+.diary-mode-badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 8px;
+  font-size: 11.5px;
+  font-weight: 400;
+  background: var(--surface-3);
+  color: var(--text-3);
+  border-radius: 999px;
+  vertical-align: middle;
+  font-family: var(--mono);
+  letter-spacing: 0;
+}
+.brief-mode-badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 8px;
+  font-size: 11.5px;
+  font-weight: 500;
+  background: rgba(107,139,214,0.15);
+  color: var(--accent);
+  border: 1px solid rgba(107,139,214,0.3);
+  border-radius: 999px;
+  font-family: var(--sans);
+  letter-spacing: 0;
+  text-transform: none;
+}
+/* 활성 ws 칩 — 현재 선택된 ws 강조 */
+.brief-ws-chip.is-current {
+  border: 2px solid var(--accent);
+  background: var(--surface-3);
+}
+.brief-ws-chip.is-current:hover { background: var(--accent-soft); }
+
+/* 공통 섹션 */
+.brief-section { display: flex; flex-direction: column; gap: 10px; }
+.brief-section-h { font: 11px/1 var(--mono); color: var(--text-3); text-transform: uppercase; letter-spacing: 0.08em; display: flex; align-items: baseline; gap: 8px; }
+.brief-section-count { font-size: 11px; color: var(--text-3); opacity: 0.7; }
+.brief-divider { height: 1px; background: var(--divider); margin: 18px 0; }
+
+/* === Section 1: 활성 ws 칩 (가로 3등분) === */
+.brief-ws-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.brief-ws-chip {
+  appearance: none; text-align: left; cursor: pointer; font-family: inherit;
+  background: var(--bg-2); border: 1px solid var(--border-2); border-radius: 10px;
+  padding: 14px 16px; display: flex; flex-direction: column; gap: 8px;
+  transition: border-color 0.15s, background 0.15s, transform 0.15s;
+}
+.brief-ws-chip:hover { border-color: var(--accent); background: var(--accent-soft); transform: translateY(-1px); }
+/* Line 1 — 강조: dot · 이름(15px 700) · 태그 chip(우측) */
+.brief-ws-chip-head { display: flex; align-items: center; gap: 8px; }
+.brief-ws-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 8px; background: var(--text-3); }
+.brief-ws-dot[data-tag="ACTIVE"]  { background: #5fb56b; box-shadow: 0 0 6px rgba(95,181,107,0.7); }
+.brief-ws-dot[data-tag="QUIET"]   { background: #c8a14a; }
+.brief-ws-dot[data-tag="DORMANT"] { background: var(--border-2); }
+.brief-ws-name { font-size: 15px; font-weight: 700; color: var(--text); letter-spacing: -0.005em; }
+.brief-ws-tag  { font: 10px/1 var(--mono); color: var(--text-3); padding: 3px 8px; border: 1px solid var(--border-2); border-radius: 999px; margin-left: auto; text-transform: uppercase; }
+/* Line 2 — 보조: signal · ep수 · 7d/어제 · top subjects (12px text-3, num만 강조) */
+.brief-ws-sub {
+  font-size: 12px; line-height: 1.5; color: var(--text-3);
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px;
+}
+.brief-ws-sub .num    { color: var(--text-2); font-family: var(--mono); }
+.brief-ws-sub .sep    { color: var(--text-3); opacity: 0.5; }
+.brief-ws-sub .signal { color: var(--text-2); }
+/* cumulative_summary 모드 — 2줄 clamp, 자연어 한 단락 */
+.brief-ws-sub.is-cumulative {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  color: var(--text-2);
+}
+.brief-ws-chip.is-dormant { opacity: 0.55; }
+.brief-ws-chip.is-dormant .brief-ws-sub { color: var(--text-3); }
+
+/* === Section 2: 최근 thread 리스트 === */
+.brief-thread-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+.brief-thread { display: grid; grid-template-columns: 22px 1fr; gap: 10px; cursor: pointer; padding: 4px 0; border-radius: 6px; transition: background 0.15s; }
+.brief-thread:hover { background: var(--bg-2); }
+.brief-thread-rank    { font: 13px/1 var(--mono); color: var(--accent); align-self: start; padding-top: 2px; text-align: center; }
+.brief-thread-head    { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; margin-bottom: 3px; }
+.brief-thread-ws      { font-size: 12px; font-weight: 600; color: var(--text); }
+.brief-thread-sep     { color: var(--text-3); }
+.brief-thread-subject { font-size: 12.5px; color: var(--text); }
+.brief-thread-meta    { font: 10.5px/1 var(--mono); color: var(--text-3); margin-left: auto; }
+.brief-thread-summary { font-size: 11.5px; color: var(--text-2); line-height: 1.5; }
+.brief-thread.is-missing .brief-thread-summary { color: var(--text-3); font-style: italic; }
+
+/* === Section 3: 추천 카드 (가로 3등분) === */
+.brief-rec-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.brief-rec-new {
+  appearance: none; text-align: left; cursor: pointer; font-family: inherit;
+  background: var(--bg-2); border: 1px solid var(--border-2); border-radius: 10px;
+  padding: 12px 14px; display: flex; flex-direction: column; gap: 8px;
+  transition: border-color 0.15s, background 0.15s, transform 0.15s;
+}
+.brief-rec-new:hover { border-color: var(--accent); background: var(--accent-soft); transform: translateY(-1px); }
+.brief-rec-new-head  { display: flex; align-items: center; gap: 8px; }
+.brief-rec-new-rank  { font: 13px/1 var(--mono); color: var(--accent); width: 18px; text-align: center; }
+.brief-rec-new-ws    { font-size: 11.5px; color: var(--text-2); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.brief-rec-new-reason{ font: 10px/1 var(--mono); padding: 2px 6px; border-radius: 999px; margin-left: auto;
+                       border: 1px solid var(--border-2); color: var(--text-3); }
+.brief-rec-new-reason[data-reason="next_step"]          { color: #9bbef0; border-color: rgba(155,190,240,0.4); }
+.brief-rec-new-reason[data-reason="open_question"]      { color: #c8a14a; border-color: rgba(200,161,74,0.4); }
+.brief-rec-new-reason[data-reason="fallback_top_thread"]{ color: var(--text-3); }
+.brief-rec-new-title { font-size: 13px; font-weight: 600; color: var(--text); line-height: 1.35; }
+.brief-rec-new-detail{ font-size: 11.5px; color: var(--text-2); line-height: 1.5; }
+
+/* === 액션 버튼 (헤더 우측, 통일된 surface 톤) === */
+.brief-card .brief-act {
+  appearance: none; font-family: inherit;
+  background: var(--surface-2); border: 1px solid var(--border-2); border-radius: 6px;
+  padding: 5px 10px; font-size: 11.5px; color: var(--text-2); cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.brief-card .brief-act:hover { background: var(--surface-3); border-color: var(--accent); color: var(--text); }
+.brief-card .brief-act-icon  { padding: 4px 8px; font-size: 13px; line-height: 1; }
+
+/* === Fallback === */
+.brief-card .brief-fallback { font-size: 12.5px; color: var(--text-3); padding: 14px 4px; line-height: 1.55; }
+.brief-card .brief-fallback code { font-family: var(--mono); background: var(--bg-2); padding: 1px 4px; border-radius: 3px; font-size: 11px; color: var(--text-2); }
+
+/* === Responsive === */
+@media (max-width: 880px) {
+  .brief-ws-grid, .brief-rec-grid { grid-template-columns: 1fr; }
+}
+
+.top-ent-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.top-ent-chip { padding: 6px 12px; background: var(--bg-2); border: 1px solid var(--border-2); border-radius: 999px; cursor: pointer; font-size: 12.5px; color: var(--text-2); display: inline-flex; align-items: baseline; gap: 8px; transition: background 0.15s, border-color 0.15s; }
+.top-ent-chip:hover { background: var(--accent-soft); border-color: var(--accent); color: #e9eefb; }
+.top-ent-chip .ent-name { font-weight: 600; }
+.top-ent-chip .ent-stat { font: 10.5px/1 var(--mono); color: var(--text-3); }
+.top-ent-chip:hover .ent-stat { color: #c8d2ee; }
+
+/* Ingest 장부 widget (P4) */
+.ledger-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+.ledger-badge { font: 11px/1 var(--mono); padding: 4px 9px; border-radius: 999px; border: 1px solid var(--border-2); background: var(--bg-2); color: var(--text-3); cursor: pointer; transition: border-color 0.15s, color 0.15s; }
+.ledger-badge:hover { border-color: var(--accent); color: var(--text); }
+.ledger-badge.warn { color: #d28a52; border-color: rgba(210,138,82,0.5); }
+.ledger-badge.warn:hover { color: #f1a866; border-color: #d28a52; }
+.ledger-rows { display: flex; flex-direction: column; gap: 6px; }
+.ledger-row { display: flex; gap: 10px; align-items: baseline; padding: 8px 10px; background: var(--bg-2); border: 1px solid var(--border-2); border-radius: 6px; font-size: 12.5px; color: var(--text-2); }
+.ledger-row .ts { font: 11px/1 var(--mono); color: var(--text-3); flex-shrink: 0; padding: 0; min-width: 95px; }
+.ledger-row .fname { font-family: var(--mono); font-size: 12px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+.ledger-row .turn-n { font: 10.5px/1 var(--mono); color: var(--text-3); flex-shrink: 0; }
+.ledger-row .dedup-tag { font: 10px/1 var(--mono); padding: 2px 6px; border-radius: 4px; flex-shrink: 0; text-transform: lowercase; }
+.dedup-tag.new { background: rgba(95,181,107,0.15); color: #6dc77c; }
+.dedup-tag.append_v2 { background: rgba(150,120,200,0.15); color: #a896d0; }
+.dedup-tag.replaced { background: rgba(150,150,150,0.15); color: var(--text-3); }
+.dedup-tag.rejected { background: rgba(200,90,90,0.15); color: #d27272; }
+.ledger-row .via { font: 10.5px/1 var(--mono); color: var(--text-3); flex-shrink: 0; }
+
+/* Ledger modal — full list */
+.ledger-modal { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(8,10,18,0.65); z-index: 1000; display: flex; align-items: center; justify-content: center; padding: 30px; }
+.ledger-modal .inner { width: min(960px, 100%); max-height: 86vh; background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 22px 24px; display: flex; flex-direction: column; }
+.ledger-modal h2 { font-size: 15px; font-weight: 700; color: var(--text); margin-bottom: 6px; }
+.ledger-modal .sub { font: 11px/1.5 var(--mono); color: var(--text-3); margin-bottom: 14px; }
+.ledger-modal .close { position: absolute; top: 18px; right: 22px; background: transparent; border: 0; color: var(--text-3); font-size: 18px; cursor: pointer; }
+.ledger-modal .close:hover { color: var(--text); }
+.ledger-modal .scroll { flex: 1; overflow-y: auto; }
+.ledger-modal section { margin-bottom: 20px; }
+.ledger-modal section h3 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-2); margin-bottom: 10px; font-weight: 700; }
+
+.avatar { width: 32px; height: 32px; border-radius: 50%; background: linear-gradient(135deg, #5a76b8, #8a6bcf); border: 1px solid var(--border-2); color: #fff; font-weight: 700; font-size: 13px; display: grid; place-items: center; }
+
+/* Topics row */
+.topics-row { display: flex; align-items: center; gap: 10px; padding: 10px 28px; border-bottom: 1px solid var(--border); background: var(--bg-2); flex-wrap: wrap; row-gap: 8px; }
+.topic-sort { display: inline-flex; gap: 2px; padding: 2px; background: var(--bg); border: 1px solid var(--border-2); border-radius: 6px; font: 10px/1 var(--mono); margin-left: auto; flex-shrink: 0; }
+.capsule.topic-hidden { display: none; }
+.topics-more { height: 28px; padding: 0 12px; border-radius: 999px; border: 1px dashed var(--border-2); background: transparent; color: var(--text-3); font-size: 12px; cursor: pointer; }
+.topics-more:hover { border-color: var(--accent); color: var(--text-2); border-style: solid; }
+.topic-sort button { padding: 4px 8px; background: transparent; border: 0; color: var(--text-3); cursor: pointer; border-radius: 4px; font: inherit; }
+.topic-sort button.active { background: var(--accent-soft); color: #e9eefb; }
+.topic-sort button:hover:not(.active) { color: var(--text-2); }
+.empty-ws-guide { padding: 36px 28px; max-width: 720px; margin: 0 auto; }
+.empty-ws-guide h2 { font-size: 19px; color: var(--text); margin-bottom: 12px; }
+.empty-ws-guide .lead { color: var(--text-2); font-size: 14px; line-height: 1.55; margin-bottom: 20px; }
+.empty-ws-guide .cmd { display: block; padding: 14px 18px; background: var(--card); border-left: 3px solid var(--accent); border-radius: 4px; font: 13px/1.55 var(--mono); color: var(--text); margin: 14px 0; }
+.empty-ws-guide .switch-ws { display: inline-block; margin-top: 12px; padding: 6px 14px; background: var(--bg-2); border: 1px solid var(--border-2); border-radius: 6px; color: var(--text-2); cursor: pointer; font-size: 12.5px; }
+.empty-ws-guide .switch-ws:hover { border-color: var(--accent); color: #e9eefb; }
+.search-layout { display: grid; grid-template-columns: 220px 1fr; gap: 24px; padding: 18px 28px; }
+.search-facets { display: flex; flex-direction: column; gap: 18px; }
+.search-facets h4 { font: 10px/1 var(--mono); color: var(--text-3); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 8px; }
+.search-facets .facet-item { display: flex; justify-content: space-between; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12.5px; color: var(--text-2); }
+.search-facets .facet-item:hover { background: var(--card); color: var(--text); }
+.search-facets .facet-item.active { background: var(--accent-soft); color: #e9eefb; }
+.search-facets .facet-item .facet-count { font: 10px/1 var(--mono); color: var(--text-3); padding-top: 2px; }
+.search-facets .facet-clear { display: inline-block; padding: 3px 8px; background: var(--bg); border: 1px solid var(--border-2); border-radius: 4px; color: var(--text-3); cursor: pointer; font: 10px/1 var(--mono); margin-top: 8px; }
+.search-facets .facet-clear:hover { color: var(--text); border-color: var(--accent); }
+.turn-row mark { background: rgba(107,139,214,0.4); color: #e9eefb; padding: 0 2px; border-radius: 2px; }
+.turn-row.search-hit { animation: hit-flash 1.6s ease-out; }
+@keyframes hit-flash { 0% { box-shadow: 0 0 0 3px var(--accent); } 100% { box-shadow: none; } }
+.capsule { flex-shrink: 0; height: 28px; padding: 0 14px; border-radius: 999px; border: 1px solid var(--border-2); background: transparent; color: var(--text-2); font-size: 12.5px; font-weight: 500; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; transition: background 0.15s, border-color 0.15s; }
+.capsule:hover { background: var(--card); color: var(--text); }
+.capsule.active { border-color: var(--accent); background: var(--accent-soft); color: #e9eefb; font-weight: 600; }
+.capsule .count { font: 10.5px/1 var(--mono); color: var(--text-3); }
+.capsule.active .count { color: #e9eefb; opacity: 0.85; }
+
+/* Sub-subjects row */
+.subtopics-row { display: flex; align-items: center; gap: 6px; padding: 6px 28px; border-bottom: 1px solid var(--border); background: var(--bg); flex-wrap: wrap; row-gap: 6px; min-height: 36px; }
+.subtopics-row .empty-sub { color: var(--text-3); font-size: 12px; padding: 0 4px; }
+.subchip { flex-shrink: 0; height: 22px; padding: 0 10px; border-radius: 6px; color: var(--text-3); font-size: 12px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+.subchip::before { content: '└'; color: var(--text-3); margin-right: 2px; font-family: var(--mono); }
+.subchip:hover { background: var(--card); color: var(--text-2); }
+.subchip.active { background: var(--card); border: 1px solid var(--border-2); color: var(--text); }
+.subchip .count { font: 10.5px/1 var(--mono); opacity: 0.7; }
+
+/* Body grid */
+.body { display: grid; grid-template-columns: 320px 1fr 360px; overflow: hidden; }
+
+/* Sidebar */
+.sidebar {
+  background: var(--bg-2); border-right: 1px solid var(--border);
+  overflow-y: auto;
+  padding: 24px 18px 22px 24px;
+}
+.sidebar h3 {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-2);
+  margin: 0 0 14px;
+  font-weight: 700;
+}
+.sidebar > * + h3 { margin-top: 24px; }
+.sidebar .controls { display: flex; gap: 4px; margin-bottom: 16px; }
+.sidebar .controls button {
+  flex: 1; font-size: 11.5px; padding: 5px 10px;
+  background: var(--surface-2); border: 1px solid var(--border-2); border-radius: 5px;
+  color: var(--text-2); cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.sidebar .controls button.active { background: var(--accent-soft); border-color: var(--accent); color: #e9eefb; }
+.sidebar .controls button:hover:not(.active) { background: var(--surface-3); border-color: var(--accent); color: var(--text); }
+.tree-month {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 7px 8px; cursor: pointer; user-select: none; border-radius: 5px;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+}
+.tree-month:hover { background: var(--card); }
+.tree-month .caret {
+  color: var(--text-3);
+  font-size: 11px;
+  margin-right: 8px;
+  display: inline-block;
+  width: 10px;
+}
+.tree-month .label { flex: 1; }
+.tree-children {
+  display: block; margin: 4px 0 10px;
+  padding-left: 14px;
+  border-left: 1px solid var(--border);
+  margin-left: 9px;
+}
+.tree-month.closed + .tree-children { display: none; }
+.tree-day {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 6px 10px 6px 8px;
+  cursor: pointer; user-select: none; border-radius: 5px;
+  color: var(--text-2);
+  font-size: 13px;
+}
+.tree-day:hover { background: var(--card); color: var(--text); }
+.tree-day.active { background: var(--accent-soft); color: #e9eefb; }
+.tree-day .label { display: flex; align-items: center; gap: 10px; }
+.tree-day .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--border-2); }
+.tree-day.active .dot { background: var(--accent); }
+.tree-count { font: 11px/1 var(--mono); color: var(--text-3); }
+.tree-day.active .tree-count { color: #e9eefb; opacity: 0.85; }
+
+/* Center pane */
+.center { display: flex; flex-direction: column; overflow: hidden; background: var(--bg); }
+.chat-head { padding: 18px 36px 14px; border-bottom: 1px solid var(--border); background: var(--bg); }
+.chat-head h1 { font-size: 17px; font-weight: 700; margin-bottom: 6px; color: var(--text); display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.chat-head .tag { display: inline-block; font-size: 11px; padding: 2px 8px; background: var(--card); border: 1px solid var(--border-2); border-radius: 4px; color: var(--text-2); font-weight: 500; }
+.chat-head .meta { font: 12px/1.5 var(--mono); color: var(--text-3); letter-spacing: 0.02em; }
+.chat-body { flex: 1; overflow-y: auto; padding: 20px 36px 40px; }
+.empty { text-align: center; color: var(--text-3); padding: 80px 20px; font-size: 14px; }
+.turn-row { display: flex; margin-bottom: 16px; align-items: flex-end; gap: 6px; }
+.turn-row.user { justify-content: flex-end; }
+.turn-row.assistant { justify-content: flex-start; }
+.turn-row.system, .turn-row.tool { justify-content: flex-start; opacity: 1; }
+/* 같은 화자 연속 발화는 간격 축소 */
+.turn-row.same-speaker { margin-top: -10px; }
+.bubble {
+  max-width: 78%; padding: 12px 16px; border-radius: 14px;
+  font-size: var(--font-body-1);          /* 15px */
+  line-height: var(--line-body);          /* 1.65 */
+  word-break: break-word;
+}
+.bubble.user { background: var(--user-bg); border: 1px solid var(--user-border); color: var(--user-text); border-top-right-radius: 4px; }
+.bubble.assistant { background: var(--card-2); border: 1px solid var(--border); color: var(--text); border-top-left-radius: 4px; }
+/* Tool-call turn — collapsible, mono, 좌측 thin border */
+.bubble.system, .bubble.tool {
+  background: var(--tool-bg);
+  border: none;
+  border-left: 2px solid var(--tool-border);
+  border-radius: 0;
+  padding: 4px 0 4px 12px;
+  margin-left: 4px;
+  color: var(--tool-text);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  font-style: normal;
+  max-width: 84%;
+}
+.bubble.tool .tool-head, .bubble.system .tool-head {
+  cursor: pointer; user-select: none;
+  display: inline-flex; align-items: center; gap: 6px;
+  color: var(--text-3);
+}
+.bubble.tool .tool-head::before,
+.bubble.system .tool-head::before { content: '▸'; font-size: 9px; transition: transform 0.15s; display: inline-block; }
+.bubble.tool.expanded .tool-head::before,
+.bubble.system.expanded .tool-head::before { transform: rotate(90deg); }
+.bubble.tool .tool-body, .bubble.system .tool-body { display: none; margin-top: 6px; white-space: pre-wrap; }
+.bubble.tool.expanded .tool-body, .bubble.system.expanded .tool-body { display: block; }
+.bubble code { font-family: var(--mono); font-size: 12.5px; background: var(--code-bg); color: var(--code-text); padding: 1px 6px; border-radius: 4px; }
+.bubble pre { background: var(--code-bg); padding: 10px 12px; border-radius: 6px; overflow-x: auto; margin: 8px 0; }
+.bubble pre code { background: transparent; padding: 0; }
+.bubble p { margin: var(--paragraph-gap) 0; }
+.bubble p:first-child { margin-top: 0; }
+.bubble p:last-child { margin-bottom: 0; }
+.bubble strong { color: #fff; }
+.bubble.user strong { color: #f5f7ff; }
+.bubble ul, .bubble ol { margin: 4px 0 4px 20px; }
+.bubble blockquote { border-left: 3px solid var(--border-2); margin: 8px 0; padding-left: 12px; color: var(--text-2); }
+.bubble table { border-collapse: collapse; margin: 8px 0; font-size: 12.5px; }
+.bubble th, .bubble td { border: 1px solid var(--border-2); padding: 4px 8px; }
+.ts { font: 10.5px/1 var(--mono); color: var(--text-3); padding-bottom: 4px; flex-shrink: 0; }
+.load-more { text-align: center; padding: 14px; color: var(--accent); font-size: 12px; cursor: pointer; }
+.load-more:hover { background: var(--card); }
+
+/* Right panel */
+.right { background: var(--bg-2); border-left: 1px solid var(--border); overflow-y: auto; padding: 22px 22px 18px; display: flex; flex-direction: column; }
+.right h3 { font-size: 12px; font-weight: 700; color: var(--text); margin-bottom: 12px; display: flex; justify-content: space-between; align-items: baseline; text-transform: uppercase; letter-spacing: 0.05em; }
+.right h3 .count { font: 11px/1 var(--mono); color: var(--text-3); font-weight: 500; text-transform: none; }
+.right .section { margin-bottom: 28px; }
+.keywords { display: flex; flex-wrap: wrap; gap: 6px 6px; }
+.tag-chip {
+  height: 26px; padding: 0 10px 0 11px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text-2);
+  font-size: 12px;
+  display: inline-flex; align-items: center; gap: 6px;
+  max-width: 220px;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+.tag-chip:hover { background: var(--card); border-color: var(--accent); color: var(--text); }
+.tag-chip .kw-name {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  max-width: 160px;
+}
+.tag-chip .kw-count {
+  font: 10.5px/1 var(--mono);
+  color: var(--text-3);
+  padding: 2px 6px;
+  background: var(--bg);
+  border-radius: 999px;
+}
+.tag-chip.hot { background: var(--accent-soft); border-color: var(--accent); color: #e9eefb; }
+.tag-chip.hot .kw-count { color: #e9eefb; background: rgba(0,0,0,0.25); }
+.tag-chip.is-hidden { display: none; }
+.keywords-more {
+  appearance: none; font-family: inherit;
+  background: transparent; border: 1px dashed var(--border-2); border-radius: 999px;
+  padding: 0 12px; font: 11px/1 var(--mono); color: var(--text-3); cursor: pointer;
+  height: 26px; display: inline-flex; align-items: center; gap: 4px;
+}
+.keywords-more:hover { border-color: var(--accent); color: var(--text-2); border-style: solid; }
+.summary-card { padding: 12px; background: var(--card); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 10px; font-size: 13px; line-height: 1.7; color: var(--text-2); overflow: hidden; }
+.summary-card .meta { font: 11px/1.4 var(--mono); color: var(--text-3); margin-bottom: 6px; overflow-wrap: anywhere; }
+.summary-card .content { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
+.summary-card .content p { margin: 0 0 8px; }
+.summary-card .content :last-child { margin-bottom: 0; }
+.right .empty-mini { color: var(--text-3); font-size: 12px; padding: 8px 0 16px; }
+
+/* Search results */
+.search-results { padding: 24px 36px 40px; overflow-y: auto; flex: 1; }
+.search-results h2 { font-size: 13px; color: var(--text-3); text-transform: uppercase; margin-bottom: 14px; letter-spacing: 0.08em; }
+.search-result { padding: 14px 16px; border: 1px solid var(--border); background: var(--card); border-radius: 8px; margin-bottom: 10px; cursor: pointer; transition: border-color 0.15s; }
+.search-result:hover { border-color: var(--accent); }
+.search-result h4 { font-size: 14px; font-weight: 600; margin-bottom: 4px; color: var(--text); }
+.search-result .meta { font: 11px/1.4 var(--mono); color: var(--text-3); margin-bottom: 8px; }
+.search-result .snippet { font-size: 12.5px; color: var(--text-2); line-height: 1.55; max-height: 5em; overflow: hidden; }
+.search-result mark { background: var(--accent-soft); color: #e9eefb; padding: 0 2px; border-radius: 2px; }
+
+/* Entity (wiki) modal */
+.modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 200; display: none; }
+.modal-backdrop.open { display: flex; align-items: stretch; justify-content: center; }
+.entity-modal { background: var(--bg-2); border: 1px solid var(--border-2); width: min(880px, calc(100vw - 80px)); margin: 40px 0; border-radius: 12px; overflow: hidden; display: flex; flex-direction: column; max-height: calc(100vh - 80px); box-shadow: 0 20px 60px rgba(0,0,0,0.6); }
+.entity-modal header { padding: 20px 26px 14px; border-bottom: 1px solid var(--border); }
+.entity-modal .crumb { font: 11px/1 var(--mono); color: var(--text-3); margin-bottom: 8px; }
+.entity-modal .crumb a { color: var(--text-3); cursor: pointer; }
+.entity-modal .crumb a:hover { color: var(--accent); }
+.entity-modal h2 { font-size: 22px; color: var(--text); margin: 0 0 4px; font-weight: 700; }
+.entity-modal .ent-meta { font: 11px/1 var(--mono); color: var(--text-3); }
+.entity-modal .close-x { position: absolute; top: 16px; right: 22px; cursor: pointer; color: var(--text-3); font-size: 22px; background: transparent; border: 0; }
+.entity-modal .close-x:hover { color: var(--text); }
+.entity-modal .ent-filter-btn { margin-top: 10px; padding: 6px 12px; background: var(--accent-soft); color: var(--accent); border: 1px solid var(--accent); border-radius: 6px; font-size: 12px; cursor: pointer; }
+.entity-modal .ent-filter-btn:hover { background: var(--accent); color: #fff; }
+.entity-modal .body { padding: 16px 26px 24px; overflow-y: auto; }
+.entity-modal .ent-body { padding: 18px 26px 26px; overflow-y: auto; }
+.entity-modal .sec { margin-bottom: 22px; }
+.entity-modal .sec h3 { font: 11px/1 var(--mono); color: var(--text-3); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 10px; font-weight: 700; }
+.entity-modal .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.wiki-chip { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; background: var(--card); border: 1px solid var(--border-2); border-radius: 14px; font-size: 12px; color: var(--text-2); cursor: pointer; }
+.wiki-chip:hover { border-color: var(--accent); color: #e9eefb; background: var(--accent-soft); }
+.wiki-chip .rt { font: 10px/1 var(--mono); color: var(--text-3); }
+.wiki-chip.dir-in::before { content: '← '; color: var(--text-3); font-family: var(--mono); }
+.wiki-chip.dir-out::before { content: '→ '; color: var(--text-3); font-family: var(--mono); }
+.fact-row { display: grid; grid-template-columns: 130px 1fr auto; gap: 10px; padding: 8px 0; border-bottom: 1px dashed var(--border); font-size: 13px; }
+.fact-row:last-child { border-bottom: 0; }
+.fact-row .pred { font: 11px/1.4 var(--mono); color: var(--accent); padding-top: 2px; }
+.fact-row .obj { color: var(--text); line-height: 1.45; }
+.fact-row .obj .quote { display: block; color: var(--text-3); font-style: italic; font-size: 11.5px; margin-top: 4px; }
+.fact-row .meta { font: 10px/1.3 var(--mono); color: var(--text-3); text-align: right; white-space: nowrap; }
+.fact-row.superseded { opacity: 0.5; }
+.fact-row.superseded .pred::after { content: ' [outdated]'; color: var(--text-3); }
+.ep-row { padding: 8px 0; border-bottom: 1px dashed var(--border); cursor: pointer; display: flex; gap: 12px; }
+.ep-row:hover { background: var(--card); }
+.ep-row .ep-date { font: 11px/1 var(--mono); color: var(--text-3); padding-top: 3px; min-width: 92px; }
+.ep-row .ep-sum { color: var(--text); line-height: 1.45; font-size: 13px; flex: 1; min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
+.ep-row .ep-ct { font: 10px/1 var(--mono); color: var(--text-3); padding-top: 3px; }
+
+/* Heatmap (GitHub contribution style — sidebar + month-zoom inline) */
+.heatmap-wrap { margin-bottom: 18px; padding: 12px 10px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; }
+.heatmap-wrap h4 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-2); margin-bottom: 8px; display: flex; justify-content: space-between; align-items: baseline; font-weight: 700; }
+.heatmap-wrap h4 .range { font: 10.5px/1 var(--mono); color: var(--text-3); text-transform: none; letter-spacing: 0; opacity: 0.85; }
+.heatmap-grid { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+.heatmap-row { display: flex; gap: 4px; align-items: flex-start; }
+.heatmap-axis-corner { width: 14px; height: 14px; flex: 0 0 14px; }
+.heatmap-axis-x { display: block; font: 10px/1 var(--mono); color: var(--text-3); position: relative; height: 14px; flex: 0 0 auto; }
+.heatmap-axis-x .month-label { position: absolute; top: 2px; white-space: nowrap; letter-spacing: 0.02em; }
+.heatmap-axis-y { display: flex; flex-direction: column; gap: 2px; font: 10px/13px var(--mono); color: var(--text-3); text-align: right; padding-right: 2px; width: 14px; flex: 0 0 14px; }
+.heatmap-axis-y span { display: block; height: 13px; line-height: 13px; }
+.heatmap { display: flex; gap: 2px; flex: 0 0 auto; }
+.heatmap .week { display: flex; flex-direction: column; gap: 2px; flex: 0 0 auto; }
+.heatmap .day { width: 13px; height: 13px; border-radius: 2px; background: var(--card); cursor: pointer; transition: outline 0.1s; border: 1px solid transparent; box-sizing: border-box; }
+.heatmap .day.empty { background: var(--card); cursor: default; border: 1px solid var(--border); padding: 0; text-align: left; color: inherit; font-size: inherit; }
+.heatmap .day.empty.future { opacity: 0.3; border-style: dashed; }
+.heatmap .day.l1 { background: rgba(107,139,214,0.4); border-color: transparent; }
+.heatmap .day.l2 { background: rgba(107,139,214,0.65); border-color: transparent; }
+.heatmap .day.l3 { background: rgba(107,139,214,0.85); border-color: transparent; }
+.heatmap .day.l4 { background: var(--accent); border-color: transparent; }
+.heatmap .day.active { outline: 1px solid var(--text); outline-offset: 1px; }
+.heatmap .day:not(.empty):hover { outline: 1px solid var(--accent); outline-offset: 1px; }
+.heatmap-legend { display: flex; align-items: center; gap: 4px; font: 10.5px/1 var(--mono); color: var(--text-3); margin-top: 8px; justify-content: flex-end; }
+.heatmap-legend .day { width: 11px; height: 11px; border-radius: 2px; cursor: default; box-sizing: border-box; }
+.heatmap-legend .day.l1 { background: rgba(107,139,214,0.4); }
+.heatmap-legend .day.l2 { background: rgba(107,139,214,0.65); }
+.heatmap-legend .day.l3 { background: rgba(107,139,214,0.85); }
+.heatmap-legend .day.l4 { background: var(--accent); }
+
+/* Inline mini-heatmap inside month-zoom tree-children */
+.tree-children .heatmap-mini { padding: 8px 4px 6px; display: flex; gap: 2px; justify-content: center; }
+.tree-children .heatmap-mini .week { display: flex; flex-direction: column; gap: 2px; }
+.tree-children .heatmap-mini .day { width: 10px; height: 10px; border-radius: 2px; background: var(--card); cursor: pointer; box-sizing: border-box; padding: 0; }
+.tree-children .heatmap-mini .day.empty { cursor: default; opacity: 0.4; padding: 0; text-align: left; color: inherit; font-size: inherit; }
+.tree-children .heatmap-mini .day.l1 { background: rgba(107,139,214,0.25); }
+.tree-children .heatmap-mini .day.l2 { background: rgba(107,139,214,0.5); }
+.tree-children .heatmap-mini .day.l3 { background: rgba(107,139,214,0.75); }
+.tree-children .heatmap-mini .day.l4 { background: var(--accent); }
+.tree-children .heatmap-mini .day.active { outline: 1px solid var(--text); outline-offset: 1px; }
+.tree-children .heatmap-mini .day:not(.empty):hover { outline: 1px solid var(--accent); outline-offset: 1px; }
+
+/* Wiki tab button (header) — cleaned-toggle/ws-label과 동일 톤 */
+.wiki-tab {
+  font: var(--font-meta)/1 var(--mono);
+  color: var(--text-3);
+  padding: 5px 11px;
+  border-radius: 6px;
+  cursor: pointer;
+  border: 1px solid var(--border-2);
+  user-select: none;
+  background: var(--bg);
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.wiki-tab::before { content: '⬢'; opacity: 0.6; font-size: 10px; }
+.wiki-tab:hover { color: var(--text); background: var(--card); border-color: var(--border-strong); }
+.wiki-tab.active { color: #e9eefb; background: var(--accent-soft); border-color: var(--accent); }
+
+/* Wiki index modal (reuses entity-modal patterns) */
+.wiki-modal { background: var(--bg-2); border: 1px solid var(--border-2); width: min(1000px, calc(100vw - 80px)); margin: 40px 0; border-radius: 12px; overflow: hidden; display: flex; flex-direction: column; max-height: calc(100vh - 80px); box-shadow: 0 20px 60px rgba(0,0,0,0.6); }
+.wiki-modal header { padding: 20px 26px 14px; border-bottom: 1px solid var(--border); position: relative; }
+.wiki-modal header h2 { font-size: 20px; color: var(--text); margin: 0 0 4px; font-weight: 700; }
+.wiki-modal header .ent-meta { font: 11px/1 var(--mono); color: var(--text-3); }
+.wiki-modal .close-x { position: absolute; top: 16px; right: 22px; cursor: pointer; color: var(--text-3); font-size: 22px; background: transparent; border: 0; }
+.wiki-modal .close-x:hover { color: var(--text); }
+.wiki-modal .wiki-body { padding: 16px 26px 24px; overflow-y: auto; }
+.wiki-group { margin-bottom: 26px; }
+.wiki-group h3 { font: 11px/1 var(--mono); color: var(--accent); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 10px; font-weight: 700; display: flex; justify-content: space-between; align-items: baseline; }
+.wiki-group h3 .count { color: var(--text-3); font-weight: 500; }
+.wiki-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 6px; }
+.wiki-entry { padding: 8px 10px; background: var(--card); border: 1px solid var(--border-2); border-radius: 6px; cursor: pointer; transition: border-color 0.15s, background 0.15s; display: flex; flex-direction: column; gap: 4px; }
+.wiki-entry:hover { border-color: var(--accent); background: var(--accent-soft); }
+.wiki-entry .name { font-size: 13px; color: var(--text); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wiki-entry .sub { font: 10.5px/1.3 var(--mono); color: var(--text-3); display: flex; justify-content: space-between; gap: 8px; }
+.wiki-entry .sub .parent { color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wiki-entry .sub .stat { white-space: nowrap; }
+.wiki-modal .wiki-empty { color: var(--text-3); font-size: 12.5px; padding: 16px 0; text-align: center; }
+
+/* Wiki — view-mode toggle (List | Graph) */
+.wiki-mode-toggle { display: inline-flex; gap: 0; margin-top: 10px; border: 1px solid var(--border-2); border-radius: 6px; overflow: hidden; }
+.wiki-mode-toggle button { background: var(--bg); color: var(--text-3); border: 0; padding: 5px 12px; font: 11.5px/1 var(--mono); cursor: pointer; transition: background 0.15s, color 0.15s; }
+.wiki-mode-toggle button + button { border-left: 1px solid var(--border-2); }
+.wiki-mode-toggle button:hover { color: var(--text); background: var(--card); }
+.wiki-mode-toggle button.active { color: #e9eefb; background: var(--accent-soft); }
+
+/* D3 force-directed graph view */
+.graph-view { width: 100%; height: 600px; border: 1px solid var(--border); background: var(--bg); border-radius: 8px; position: relative; overflow: hidden; }
+.graph-view svg { width: 100%; height: 100%; display: block; cursor: grab; }
+.graph-view svg:active { cursor: grabbing; }
+.graph-node { cursor: pointer; }
+.graph-node circle { stroke: var(--border-strong); stroke-width: 1.5; transition: stroke 0.15s; }
+.graph-node:hover circle { stroke: var(--accent); stroke-width: 2.5; }
+.graph-node text { font-size: 11px; fill: var(--text); pointer-events: none; font-family: var(--mono); }
+.graph-link { stroke-opacity: 0.6; fill: none; }
+.graph-link.part_of { stroke: #6b8bd6; }
+.graph-link.depends_on { stroke: #d68b6b; }
+.graph-link.supports { stroke: #6bd68b; }
+.graph-link.contradicts { stroke: #d66b8b; stroke-dasharray: 4,2; }
+.graph-link.related_to { stroke: var(--text-3); }
+.graph-controls { padding: 8px 4px; display: flex; gap: 12px; align-items: center; font: 11px/1 var(--mono); color: var(--text-3); }
+.graph-controls .legend { display: inline-flex; align-items: center; gap: 4px; }
+.graph-controls .legend .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 50%; }
+.graph-empty { color: var(--text-3); font-size: 12.5px; padding: 24px 0; text-align: center; }
+
+/* Diary-first view */
+.diary-list { display: flex; flex-direction: column; gap: 28px; padding: 8px 4px 80px; }
+.diary-card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 22px 26px 18px; }
+.diary-card .diary-head { display: flex; gap: 14px; align-items: baseline; margin-bottom: 8px; font: 11.5px/1.2 var(--mono); color: var(--text-3); }
+.diary-card .diary-time { font-weight: 700; color: var(--text); font-size: 13px; }
+.diary-card .diary-meta { color: var(--text-3); }
+.diary-card .diary-title { font-size: 14.5px; font-weight: 700; color: var(--text); margin: 4px 0 10px; letter-spacing: -0.01em; }
+.diary-card .diary-placeholder { background: rgba(255, 200, 100, 0.08); border: 1px solid rgba(255, 200, 100, 0.25); color: #d9b06a; padding: 6px 10px; border-radius: 6px; font-size: 12px; margin: 6px 0 10px; }
+.diary-card .diary-body { font: 15px/1.72 var(--sans); color: var(--text); white-space: pre-wrap; word-break: keep-all; }
+.diary-card .diary-body p { margin: 0 0 12px; }
+.diary-card .diary-body h1, .diary-card .diary-body h2, .diary-card .diary-body h3 { margin: 14px 0 6px; }
+.diary-card .diary-foot { margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--border-2); }
+.diary-card .show-turns-btn { background: var(--bg-2); border: 1px solid var(--border-2); color: var(--text-2); padding: 7px 14px; border-radius: 8px; font: 12px/1 var(--sans); cursor: pointer; transition: all 0.15s; }
+.diary-card .show-turns-btn:hover { background: var(--border-2); color: var(--text); }
+.diary-turns-slot { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); }
+.chat-head .chat-title { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; }
+.chat-head .ct-main { font-size: 18px; font-weight: 700; color: var(--text); }
+.chat-head .ct-hint { font: 11.5px/1.4 var(--sans); color: var(--text-3); flex-basis: 100%; margin-top: 6px; }
+
+/* Scrollbar */
+.sidebar::-webkit-scrollbar, .chat-body::-webkit-scrollbar, .right::-webkit-scrollbar, .search-results::-webkit-scrollbar { width: 8px; }
+.sidebar::-webkit-scrollbar-thumb, .chat-body::-webkit-scrollbar-thumb, .right::-webkit-scrollbar-thumb, .search-results::-webkit-scrollbar-thumb { background: var(--border-2); border-radius: 4px; }
+.sidebar::-webkit-scrollbar-thumb:hover, .chat-body::-webkit-scrollbar-thumb:hover, .right::-webkit-scrollbar-thumb:hover, .search-results::-webkit-scrollbar-thumb:hover { background: var(--text-3); }
 </style>
 </head>
 <body>
 <div class="app">
-  <aside class="sidebar">
-    <div class="status-bar">
-      <span id="ws-name">…</span>
-      <a id="refresh-btn">↻</a>
+  <div class="header">
+    <div class="logo">JARVIS</div>
+    <div class="search-pill">
+      <span style="color:var(--text-3);">⌕</span>
+      <input id="search-input" placeholder="대화·키워드·요약 검색" autocomplete="off" />
+      <span class="kbd">⌘K</span>
     </div>
-    <div class="controls">
-      <button id="zoom-month" class="zoom-btn">월</button>
-      <button id="zoom-week" class="zoom-btn">주</button>
-      <button id="zoom-day" class="zoom-btn active">일</button>
-      <button id="order-btn" title="정렬 방향 토글">↓</button>
+    <div class="header-spacer"></div>
+    <div id="stats-pill" class="stats-pill loading" title="워크스페이스 누적 통계">…</div>
+    <div id="wiki-tab" class="wiki-tab" role="button" tabindex="0" title="위키 — 워크스페이스에 누적된 모든 엔티티 한눈에 보기">위키</div>
+    <div id="cleaned-toggle" class="cleaned-toggle" role="button" tabindex="0" title="도구 호출 줄 숨김/표시">정제</div>
+    <div class="ws-label-wrap">
+      <div class="ws-label" id="ws-label" role="button" tabindex="0">…</div>
+      <div class="ws-menu" id="ws-menu"></div>
     </div>
-    <div id="date-tree"></div>
-  </aside>
-
-  <main class="main">
-    <div class="subjects-bar" id="subjects-bar"></div>
-    <div class="body" id="body">
-      <div class="empty">사이드바에서 날짜를 선택하거나 상단에서 주제를 선택하세요.</div>
-    </div>
-  </main>
-
-  <aside class="right">
-    <h3>요약</h3>
-    <div id="summaries-list">
-      <div class="empty" style="padding: 20px 0;">선택된 (날짜, 주제) 요약 없음</div>
-    </div>
-  </aside>
+    <div class="avatar">SJ</div>
+  </div>
+  <div class="topics-row" id="topics-row"></div>
+  <div class="subtopics-row" id="subtopics-row"></div>
+  <div class="body">
+    <aside class="sidebar">
+      <div id="heatmap-container"></div>
+      <h3>날짜 트리</h3>
+      <div class="controls">
+        <button id="zoom-month">월</button>
+        <button id="zoom-day" class="active">일</button>
+        <button id="order-btn" title="정렬 토글">↓</button>
+      </div>
+      <div id="date-tree"></div>
+    </aside>
+    <main class="center" id="center">
+      <div class="chat-head" id="chat-head">
+        <h1><span class="diary-ws-name"></span> 일기<span class="diary-mode-badge">현재 ws</span></h1>
+        <div class="meta">상단 주제 또는 좌측 날짜를 선택하세요</div>
+      </div>
+      <div class="chat-body" id="chat-body"></div>
+    </main>
+    <aside class="right">
+      <div class="section">
+        <h3>다룬 주제 <span class="count" id="keywords-count"></span></h3>
+        <div class="keywords" id="keywords"><div class="empty-mini">날짜나 주제를 선택하면 표시됩니다</div></div>
+      </div>
+      <div class="section" style="flex:1;">
+        <h3>요약 <span class="count" id="summaries-count"></span></h3>
+        <div id="summaries"><div class="empty-mini">선택된 범위의 요약 없음</div></div>
+      </div>
+    </aside>
+  </div>
 </div>
+
+<div class="modal-backdrop" id="entity-modal"></div>
 
 <script>
 const API = '/api/v1/memory';
 let WORKSPACE_ID = null;
-let state = {
-  selectedDate: null,
-  selectedSubjectId: null,
+let WORKSPACE_NAME = null;
+const state = {
+  topics: [],          // [{subject_id, name, turn_count}]
+  subTree: null,       // SubjectTreeResponse
+  subjectsMap: {},     // {subject_id: {name, parent_id, turn_count}}
+  cleanedView: true,   // 도구 호출 줄 hide
+  entityStack: [],     // wikilink 네비게이션 히스토리 (entity_id 배열)
+  topicSortMode: 'activity',  // 'activity' | 'recent' | 'name'
+  searchQuery: '',
+  searchResultsRaw: [],
+  searchFacets: { yearMonth: null, subjectId: null, matchedField: null },
+  searchJumpTerm: null,  // 검색 후 다음 refreshBody에서 하이라이트할 단어
+  selectedTopicId: null,
+  selectedSubId: null,
+  selectedDate: null,  // YYYY-MM-DD
   zoom: 'day',
   descending: true,
-  subjects: [],
   dateBuckets: { months: {} },
+  monthOpen: {},
+  searchActive: false,
+  workspaces: [],      // [{id, name, ep_count?}]
+  turnsLimit: 1000,    // current load limit for body
+  totalTurns: 0,       // last server-reported total
+  hasMore: false,      // last server-reported has_more
+  brief: null,         // Today's Brief payload (BriefResponse) — null when fetch fails
+  briefMode: 'cross',  // 'cross' (전체 ws) | 'deep' (현재 ws)
+  wikiViewMode: 'list', // 'list' | 'graph' — Stage 2C wiki tab view toggle
+  graphData: null,     // last /graph response (cached per modal open)
 };
 
+// ── Utilities ──
+function $(id) { return document.getElementById(id); }
 async function post(path, body) {
   const res = await fetch(API + path, {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(`${path} ${res.status}`);
+  if (!res.ok) throw new Error(`${path} ${res.status}: ${await res.text()}`);
   return res.json();
 }
-
-async function pickWorkspace() {
-  const res = await fetch('/api/v1/workspaces');
-  const list = await res.json();
-  // Pick the one with most episodes — for now, hardcode 'vision-test' or first non-test
-  let target = list.find(w => w.name === 'vision-test')
-            || list.find(w => w.name === 'personal')
-            || list[0];
-  WORKSPACE_ID = target.id;
-  document.getElementById('ws-name').textContent = target.name;
+function fmtKST(iso) {
+  const d = new Date(iso);
+  const dd = String(d.getDate()).padStart(2,'0');
+  const hh = String(d.getHours()).padStart(2,'0');
+  const mm = String(d.getMinutes()).padStart(2,'0');
+  return `${dd}일 ${hh}:${mm}`;
 }
-
-async function loadDateBuckets() {
-  // Get status first (date range), then fetch turns in batches to build month/week/day counts
-  const status = await post('/upload-status', { workspace_id: WORKSPACE_ID });
-  if (!status.earliest_episode_at) return;
-
-  // For MVP: fetch all turn timestamps via /timeline with large limit, bucket client-side
-  const tl = await post('/timeline', {
-    workspace_id: WORKSPACE_ID,
-    descending: state.descending, limit: 5000,
-  });
-  const buckets = {}; // {YYYY-MM: {weeks: {WW: {days: {YYYY-MM-DD: count}}}}}
-  for (const t of tl.turns) {
-    const d = new Date(t.timestamp);
-    const ym = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
-    const ymd = `${ym}-${String(d.getDate()).padStart(2,'0')}`;
-    const week = isoWeek(d);
-    if (!buckets[ym]) buckets[ym] = { count: 0, weeks: {} };
-    if (!buckets[ym].weeks[week]) buckets[ym].weeks[week] = { count: 0, days: {} };
-    if (!buckets[ym].weeks[week].days[ymd]) buckets[ym].weeks[week].days[ymd] = 0;
-    buckets[ym].count++;
-    buckets[ym].weeks[week].count++;
-    buckets[ym].weeks[week].days[ymd]++;
-  }
-  state.dateBuckets = { months: buckets };
-  renderDateTree();
+function fmtTime(iso) {
+  const d = new Date(iso);
+  return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
 }
-
-function isoWeek(d) {
-  const target = new Date(d.valueOf());
-  const dayNr = (d.getDay() + 6) % 7;
-  target.setDate(target.getDate() - dayNr + 3);
-  const jan4 = new Date(target.getFullYear(), 0, 4);
-  const dayDiff = (target - jan4) / 86400000;
-  return Math.ceil((dayDiff + ((jan4.getDay() + 6) % 7) + 1) / 7);
-}
-
-function renderDateTree() {
-  const tree = document.getElementById('date-tree');
-  tree.innerHTML = '';
-  const months = Object.keys(state.dateBuckets.months).sort();
-  if (!state.descending) {} else months.reverse();
-
-  for (const ym of months) {
-    const mb = state.dateBuckets.months[ym];
-    const mnode = document.createElement('div');
-    mnode.className = 'tree-node month';
-    mnode.innerHTML = `<span>▼ ${ym}</span><span class="count">${mb.count}</span>`;
-    tree.appendChild(mnode);
-    let monthOpen = true;
-    mnode.onclick = () => { monthOpen = !monthOpen; monthChildren.style.display = monthOpen ? 'block' : 'none'; mnode.firstElementChild.textContent = (monthOpen ? '▼ ' : '▶ ') + ym; };
-
-    const monthChildren = document.createElement('div');
-    tree.appendChild(monthChildren);
-
-    if (state.zoom === 'month') continue;
-
-    const weeks = Object.keys(mb.weeks).sort((a,b) => state.descending ? b-a : a-b);
-    for (const w of weeks) {
-      const wb = mb.weeks[w];
-      if (state.zoom === 'week') {
-        const wnode = document.createElement('div');
-        wnode.className = 'tree-node week';
-        wnode.innerHTML = `<span>${w}주차</span><span class="count">${wb.count}</span>`;
-        monthChildren.appendChild(wnode);
-        continue;
-      }
-      // day zoom: list days directly
-      const days = Object.keys(wb.days).sort((a,b) => state.descending ? b.localeCompare(a) : a.localeCompare(b));
-      for (const d of days) {
-        const cnt = wb.days[d];
-        const dnode = document.createElement('div');
-        dnode.className = 'tree-node day' + (state.selectedDate === d ? ' active' : '');
-        dnode.innerHTML = `<span>${d.slice(8)}일</span><span class="count">${cnt}</span>`;
-        dnode.onclick = (e) => { e.stopPropagation(); selectDate(d); };
-        monthChildren.appendChild(dnode);
-      }
-    }
-  }
-}
-
-async function loadSubjects() {
-  const res = await post('/subjects', { workspace_id: WORKSPACE_ID, top_level_only: true });
-  state.subjects = res.subjects;
-  renderSubjects();
-}
-
-function renderSubjects() {
-  const bar = document.getElementById('subjects-bar');
-  bar.innerHTML = '';
-  if (state.subjects.length === 0) {
-    bar.innerHTML = '<span style="color: var(--muted); font-size: 13px;">아직 분류된 주제 없음</span>';
-    return;
-  }
-  // "All" chip
-  const all = document.createElement('div');
-  all.className = 'chip' + (state.selectedSubjectId === null ? ' active' : '');
-  all.innerHTML = `전체`;
-  all.onclick = () => selectSubject(null);
-  bar.appendChild(all);
-  for (const s of state.subjects) {
-    const chip = document.createElement('div');
-    chip.className = 'chip' + (state.selectedSubjectId === s.subject_id ? ' active' : '');
-    chip.innerHTML = `${s.name}<span class="count">${s.turn_count}</span>`;
-    chip.onclick = () => selectSubject(s.subject_id);
-    bar.appendChild(chip);
-  }
-}
-
-async function selectDate(d) {
-  state.selectedDate = d;
-  renderDateTree();
-  renderSubjects();
-  await renderBody();
-  await renderSummary();
-}
-
-async function selectSubject(id) {
-  state.selectedSubjectId = id;
-  renderSubjects();
-  await renderBody();
-  await renderSummary();
-}
-
-async function renderBody() {
-  const body = document.getElementById('body');
-  if (!state.selectedDate && !state.selectedSubjectId) {
-    body.innerHTML = '<div class="empty">사이드바에서 날짜를 선택하거나 상단에서 주제를 선택하세요.</div>';
-    return;
-  }
-
-  let turns = [];
-  if (state.selectedSubjectId) {
-    const req = {
-      workspace_id: WORKSPACE_ID, subject_id: state.selectedSubjectId,
-      descending: state.descending, limit: 200, include_descendants: true,
-    };
-    if (state.selectedDate) {
-      req.date_from = `${state.selectedDate}T00:00:00Z`;
-      req.date_to = nextDay(state.selectedDate) + 'T00:00:00Z';
-    }
-    const res = await post('/subject-feed', req);
-    turns = res.turns;
-  } else if (state.selectedDate) {
-    const res = await post('/timeline', {
-      workspace_id: WORKSPACE_ID,
-      date_from: `${state.selectedDate}T00:00:00Z`,
-      date_to: nextDay(state.selectedDate) + 'T00:00:00Z',
-      descending: state.descending, limit: 500,
-    });
-    turns = res.turns;
-  }
-  if (turns.length === 0) {
-    body.innerHTML = '<div class="empty">해당 범위에 대화 없음.</div>';
-    return;
-  }
-  body.innerHTML = turns.map(t => {
-    const dt = new Date(t.timestamp);
-    const time = dt.toISOString().replace('T',' ').slice(0,19);
-    const rendered = marked.parse(t.text || '');
-    return `<div class="turn">
-      <div class="meta"><span class="role ${t.role}">${t.role}</span>${time}</div>
-      <div class="text">${rendered}</div>
-    </div>`;
-  }).join('');
-}
-
 function nextDay(d) {
   const dt = new Date(d + 'T00:00:00Z');
   dt.setUTCDate(dt.getUTCDate() + 1);
   return dt.toISOString().slice(0,10);
 }
+function dateKey(iso) {
+  return iso.slice(0,10);
+}
+function weekdayKR(iso) {
+  const days = ['일','월','화','수','목','금','토'];
+  return days[new Date(iso).getDay()] + '요일';
+}
 
-async function renderSummary() {
-  const panel = document.getElementById('summaries-list');
+// ── Workspace ──
+async function pickWorkspace() {
+  const res = await fetch('/api/v1/workspaces');
+  const list = await res.json();
+  state.workspaces = list;
+  const target = list.find(w => w.name === '자비스 캡스톤 프로젝트')
+              || list.find(w => w.name === '자비스프로젝트')
+              || list.find(w => w.name === 'ai-argos')
+              || list[0];
+  WORKSPACE_ID = target.id;
+  WORKSPACE_NAME = target.name;
+  setWsLabel(target.name);
+}
+
+function renderWsMenu() {
+  const menu = $('ws-menu');
+  const featured = ['자비스 캡스톤 프로젝트', '자비스프로젝트', 'ai-argos'];
+  const sorted = [...state.workspaces].sort((a, b) => {
+    const ai = featured.indexOf(a.name), bi = featured.indexOf(b.name);
+    if (ai !== -1 || bi !== -1) {
+      if (ai === -1) return 1;
+      if (bi === -1) return -1;
+      return ai - bi;
+    }
+    return a.name.localeCompare(b.name);
+  });
+  menu.innerHTML = sorted.map(w => `
+    <div class="ws-menu-item${w.id === WORKSPACE_ID ? ' active' : ''}" data-ws-id="${w.id}" data-ws-name="${escapeHtml(w.name)}">
+      <span>${escapeHtml(w.name)}</span>
+      <span class="ep-count">${w.id === WORKSPACE_ID ? '✓' : ''}</span>
+    </div>
+  `).join('');
+  for (const el of menu.querySelectorAll('.ws-menu-item')) {
+    el.onclick = async () => {
+      const id = el.getAttribute('data-ws-id');
+      const name = el.getAttribute('data-ws-name');
+      if (id === WORKSPACE_ID) { menu.classList.remove('open'); return; }
+      WORKSPACE_ID = id;
+      WORKSPACE_NAME = name;
+      setWsLabel(name);
+      menu.classList.remove('open');
+      // Reset selection + reload
+      state.selectedTopicId = null;
+      state.selectedSubId = null;
+      state.selectedDate = null;
+      state.subTree = null;
+      state.subjectsMap = {};
+      state.searchActive = false;
+      state.onThisDay = null;
+      state.wikiIndex = null;
+      state.brief = null;
+      restoreLayout();
+      await Promise.all([loadTopics(), loadDateTree(), loadSubTree(), loadDashboard(), loadLedger(), loadOnThisDay(), loadBrief()]);
+      await refreshBody();
+    };
+  }
+}
+
+// ── Topics (top-level subjects) ──
+async function loadTopics() {
+  const r = await post('/subjects', { workspace_id: WORKSPACE_ID, top_level_only: true });
+  state.topics = r.subjects;
+  renderTopics();
+}
+function sortedTopics() {
+  const arr = state.topics.slice();
+  if (state.topicSortMode === 'name') {
+    arr.sort((a,b) => a.name.localeCompare(b.name, 'ko'));
+  } else if (state.topicSortMode === 'recent') {
+    // recent: latest_episode_at desc → fallback to turn_count if absent
+    arr.sort((a,b) => {
+      const at = a.latest_episode_at || '';
+      const bt = b.latest_episode_at || '';
+      if (at !== bt) return bt.localeCompare(at);
+      return b.turn_count - a.turn_count;
+    });
+  } else {
+    arr.sort((a,b) => b.turn_count - a.turn_count);
+  }
+  return arr;
+}
+function renderTopics() {
+  const row = $('topics-row');
+  row.innerHTML = '';
+  if (state.topics.length === 0) {
+    row.innerHTML = '<span style="color:var(--text-3);font-size:12px;">분류된 주제 없음</span>';
+    return;
+  }
+  // "전체" pseudo-tab — count는 워크스페이스 실제 turn 수(dashboard stats).
+  // (subjects.turn_count 합은 turn이 여러 주제에 중복 매핑돼 부풀려지므로 쓰지 않음)
+  const all = document.createElement('div');
+  all.className = 'capsule' + (state.selectedTopicId === null ? ' active' : '');
+  const wsTotal = state.dashboard?.stats?.total_turns;
+  all.innerHTML = `<span>전체</span>` + (wsTotal ? `<span class="count">${wsTotal.toLocaleString()}</span>` : '');
+  all.onclick = () => selectTopic(null);
+  row.appendChild(all);
+  // 상위 N개만 노출 + 더보기 (주제가 수십 개라 화면을 덮는 문제 방지)
+  const VISIBLE_TOPICS = 12;
+  const topics = sortedTopics();
+  topics.forEach((t, i) => {
+    const cap = document.createElement('div');
+    cap.className = 'capsule'
+      + (state.selectedTopicId === t.subject_id ? ' active' : '')
+      + (i >= VISIBLE_TOPICS ? ' topic-hidden' : '');
+    cap.innerHTML = `<span>${escapeHtml(t.name)}</span><span class="count">${t.turn_count.toLocaleString()}</span>`;
+    cap.onclick = () => selectTopic(t.subject_id);
+    row.appendChild(cap);
+  });
+  if (topics.length > VISIBLE_TOPICS) {
+    const moreBtn = document.createElement('button');
+    moreBtn.className = 'topics-more';
+    moreBtn.dataset.expanded = '0';
+    moreBtn.textContent = `+ ${topics.length - VISIBLE_TOPICS}개`;
+    moreBtn.onclick = (e) => {
+      e.stopPropagation();
+      const expanded = moreBtn.dataset.expanded === '1';
+      for (const el of row.querySelectorAll('.topic-hidden')) {
+        el.style.display = expanded ? 'none' : '';
+      }
+      moreBtn.dataset.expanded = expanded ? '0' : '1';
+      moreBtn.textContent = expanded ? `+ ${topics.length - VISIBLE_TOPICS}개` : '접기';
+    };
+    row.appendChild(moreBtn);
+  }
+  // Sort toggle (활성도/최근/이름)
+  const sortBox = document.createElement('div');
+  sortBox.className = 'topic-sort';
+  const modes = [['activity', '활성'], ['recent', '최근'], ['name', '이름']];
+  for (const [m, label] of modes) {
+    const btn = document.createElement('button');
+    btn.textContent = label;
+    if (state.topicSortMode === m) btn.classList.add('active');
+    btn.onclick = (e) => { e.stopPropagation(); state.topicSortMode = m; renderTopics(); };
+    sortBox.appendChild(btn);
+  }
+  row.appendChild(sortBox);
+}
+
+// ── Sub-subjects ──
+async function loadSubTree() {
+  if (state.subTree) return;
+  state.subTree = await post('/subject-tree', { workspace_id: WORKSPACE_ID });
+  // Flatten into subjectsMap
+  const walk = (nodes, parentId) => {
+    for (const n of nodes) {
+      state.subjectsMap[n.subject_id] = {
+        name: n.name,
+        parent_id: parentId,
+        turn_count: n.turn_count,
+        // entity_type 은 백엔드 /subject-tree 응답에 있을 수도 없을 수도 — 옵셔널.
+        // F3: episode_topic 자동 분해 결과는 색인 chip 에서 제외 (아래 필터에서 사용).
+        entity_type: n.entity_type || null,
+      };
+      if (n.children) walk(n.children, n.subject_id);
+    }
+  };
+  walk(state.subTree.roots, null);
+}
+function findNode(roots, id) {
+  for (const r of roots) {
+    if (r.subject_id === id) return r;
+    const f = findNode(r.children, id);
+    if (f) return f;
+  }
+  return null;
+}
+function renderSubtopics() {
+  const row = $('subtopics-row');
+  row.innerHTML = '';
+  if (!state.selectedTopicId) {
+    row.innerHTML = '<span class="empty-sub">주제를 선택하면 하위가 표시됩니다</span>';
+    return;
+  }
+  if (!state.subTree) return;
+  const node = findNode(state.subTree.roots, state.selectedTopicId);
+  if (!node || node.children.length === 0) {
+    row.innerHTML = '<span class="empty-sub">하위 주제 없음</span>';
+    return;
+  }
+  const sorted = [...node.children].sort((a,b) => b.turn_count - a.turn_count);
+  // "전체" sub
+  const all = document.createElement('div');
+  all.className = 'subchip' + (state.selectedSubId === null ? ' active' : '');
+  all.innerHTML = `<span>전체</span><span class="count">${node.turn_count.toLocaleString()}</span>`;
+  all.onclick = () => selectSub(null);
+  row.appendChild(all);
+  for (const c of sorted) {
+    const chip = document.createElement('div');
+    chip.className = 'subchip' + (state.selectedSubId === c.subject_id ? ' active' : '');
+    // truncate label > 40 chars
+    const label = c.name.length > 40 ? c.name.slice(0, 38) + '…' : c.name;
+    chip.innerHTML = `<span>${escapeHtml(label)}</span><span class="count">${c.turn_count}</span>`;
+    chip.title = c.name + ' — 클릭으로 위키 페이지';
+    // F4: 우측 색인 chip 과 동작 통일 — 위키 모달 띄움.
+    // 본문 필터 (selectSub) 는 모달 안 "본문 필터링" 버튼으로 옮김 (renderEntityModal).
+    chip.onclick = () => openEntityPage(c.subject_id);
+    row.appendChild(chip);
+  }
+}
+
+// ── Date tree ──
+async function loadDateTree() {
+  // Light aggregation — server returns per-day count only, full history.
+  const r = await post('/date-buckets', { workspace_id: WORKSPACE_ID });
+  const months = {};
+  for (const b of r.buckets) {
+    const ym = b.date.slice(0, 7);
+    if (!months[ym]) months[ym] = { count: 0, days: {} };
+    months[ym].count += b.count;
+    months[ym].days[b.date] = b.count;
+  }
+  state.dateBuckets = { months };
+  // Default: open the latest month
+  const latest = Object.keys(months).sort().pop();
+  if (latest && state.monthOpen[latest] === undefined) state.monthOpen[latest] = true;
+  renderDateTree();
+  renderSidebarHeatmap();
+}
+function renderDateTree() {
+  const tree = $('date-tree');
+  tree.innerHTML = '';
+  const months = Object.keys(state.dateBuckets.months).sort();
+  if (state.descending) months.reverse();
+  for (const ym of months) {
+    const mb = state.dateBuckets.months[ym];
+    const open = state.monthOpen[ym] === true;
+    const mnode = document.createElement('div');
+    mnode.className = 'tree-month' + (open ? '' : ' closed');
+    mnode.innerHTML = `<span class="label"><span class="caret">${open ? '▼' : '▶'}</span>${ym}</span><span class="tree-count">${mb.count.toLocaleString()}</span>`;
+    mnode.onclick = () => { state.monthOpen[ym] = !open; renderDateTree(); };
+    tree.appendChild(mnode);
+    const children = document.createElement('div');
+    children.className = 'tree-children';
+    if (!open) { tree.appendChild(children); continue; }
+    if (state.zoom === 'month') {
+      // P7 — month-zoom: replace per-day list with a mini calendar heatmap.
+      // Lets the user see the month's rhythm without scrolling a 30-row list.
+      children.appendChild(renderMonthMiniHeatmap(ym, mb.days));
+      tree.appendChild(children);
+      continue;
+    }
+    const days = Object.keys(mb.days).sort();
+    if (state.descending) days.reverse();
+    for (const d of days) {
+      const dnode = document.createElement('div');
+      dnode.className = 'tree-day' + (state.selectedDate === d ? ' active' : '');
+      dnode.innerHTML = `<div class="label"><span class="dot"></span><span>${d.slice(8)} ${weekdayKR(d)}</span></div><span class="tree-count">${mb.days[d]}</span>`;
+      dnode.onclick = (e) => { e.stopPropagation(); selectDate(d); };
+      children.appendChild(dnode);
+    }
+    tree.appendChild(children);
+  }
+}
+
+// ── Heatmap (GitHub contribution style) ──
+// Maps an absolute count to a 0-4 level using fixed thresholds relative to
+// the workspace max (so a sparse workspace doesn't render everything as l4).
+function heatLevel(count, max) {
+  if (!count) return 0;
+  if (max <= 0) return 0;
+  const ratio = count / max;
+  if (ratio >= 0.75) return 4;
+  if (ratio >= 0.45) return 3;
+  if (ratio >= 0.2)  return 2;
+  return 1;
+}
+
+// Compute global max-per-day across the whole workspace.
+function workspaceMaxPerDay() {
+  let max = 0;
+  for (const ym of Object.keys(state.dateBuckets.months || {})) {
+    const days = state.dateBuckets.months[ym].days || {};
+    for (const d of Object.keys(days)) {
+      if (days[d] > max) max = days[d];
+    }
+  }
+  return max;
+}
+
+// Build a 12-week × 7-day heatmap covering the last ~84 days from today.
+// Renders into the sidebar so the user has an immediate sense of activity
+// rhythm without expanding the month tree.
+function renderSidebarHeatmap() {
+  const container = $('heatmap-container');
+  if (!container) return;
+  const max = workspaceMaxPerDay();
+  // Flatten all date→count for O(1) lookup (safe even when max===0).
+  const counts = {};
+  for (const ym of Object.keys(state.dateBuckets.months || {})) {
+    const days = state.dateBuckets.months[ym].days || {};
+    for (const d of Object.keys(days)) counts[d] = days[d];
+  }
+  const WEEKS = 12;
+  const DAYS = WEEKS * 7;
+  // Anchor on today (server-local interpretation — uses browser clock; matches
+  // user expectation of "right now"). Snap the end to today's Saturday so the
+  // most-recent week column is complete; then walk back DAYS-1 to derive the
+  // start (which will land on a Sunday by construction).
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const end = new Date(today);
+  end.setDate(end.getDate() + (6 - end.getDay()));   // snap forward to Saturday
+  const start = new Date(end);
+  start.setDate(start.getDate() - (DAYS - 1));        // 84-day window ending Sat
+  const cells = [];
+  const cursor = new Date(start);
+  for (let i = 0; i < DAYS; i++) {
+    const yyyy = cursor.getFullYear();
+    const mm = String(cursor.getMonth() + 1).padStart(2, '0');
+    const dd = String(cursor.getDate()).padStart(2, '0');
+    const key = `${yyyy}-${mm}-${dd}`;
+    const future = cursor > today;
+    cells.push({ key, count: counts[key] || 0, future, month: cursor.getMonth() + 1 });
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  // Group into weeks (columns, 7 rows each). Track first-cell month per week
+  // for the x-axis label positioning.
+  const weeksHtml = [];
+  const weekMonths = [];        // month number of the top (Sunday) cell per column
+  for (let w = 0; w < WEEKS; w++) {
+    const wcells = [];
+    weekMonths.push(cells[w * 7] ? cells[w * 7].month : null);
+    for (let r = 0; r < 7; r++) {
+      const cell = cells[w * 7 + r];
+      if (!cell) continue;
+      if (cell.future) {
+        wcells.push(`<div class="day empty future" title="${cell.key} · (미래)"></div>`);
+        continue;
+      }
+      const lvl = heatLevel(cell.count, max);
+      const cls = `day l${lvl}${state.selectedDate === cell.key ? ' active' : ''}${cell.count === 0 ? ' empty' : ''}`;
+      const title = `${cell.key} · ${cell.count} turns`;
+      const attr = cell.count > 0 ? ` data-date="${cell.key}"` : '';
+      wcells.push(`<div class="${cls}" title="${title}"${attr}></div>`);
+    }
+    weeksHtml.push(`<div class="week">${wcells.join('')}</div>`);
+  }
+  // Build x-axis month labels: place a label at the first week of each month
+  // appearing in the window. Column width = 13px cell + 2px gap = 15px.
+  const COL_W = 15;
+  const xLabels = [];
+  let prevMonth = null;
+  for (let w = 0; w < WEEKS; w++) {
+    const m = weekMonths[w];
+    if (m && m !== prevMonth) {
+      xLabels.push(`<span class="month-label" style="left:${w * COL_W}px">${m}월</span>`);
+      prevMonth = m;
+    }
+  }
+  const rangeLabel = `${cells[0].key.slice(5)} → ${cells[cells.length-1].key.slice(5)}`;
+  container.innerHTML = `
+    <div class="heatmap-wrap">
+      <h4>활동 히트맵 <span class="range">${rangeLabel}</span></h4>
+      <div class="heatmap-grid">
+        <div class="heatmap-row">
+          <div class="heatmap-axis-corner"></div>
+          <div class="heatmap-axis-x">${xLabels.join('')}</div>
+        </div>
+        <div class="heatmap-row">
+          <div class="heatmap-axis-y"><span></span><span>월</span><span></span><span>수</span><span></span><span>금</span><span></span></div>
+          <div class="heatmap" id="sidebar-heatmap">${weeksHtml.join('')}</div>
+        </div>
+      </div>
+      <div class="heatmap-legend">
+        <span>적음</span>
+        <span class="day l1"></span>
+        <span class="day l2"></span>
+        <span class="day l3"></span>
+        <span class="day l4"></span>
+        <span>많음</span>
+      </div>
+    </div>`;
+  for (const el of container.querySelectorAll('.day[data-date]')) {
+    el.onclick = () => selectDate(el.getAttribute('data-date'));
+  }
+}
+
+// Mini calendar heatmap for a single month, rendered inline inside the
+// month-zoom tree-children when the month is expanded but zoom='month'.
+// 7×N grid where each cell is one day of that month.
+function renderMonthMiniHeatmap(ym, daysMap) {
+  const [year, month] = ym.split('-').map(Number);
+  const max = Math.max(1, ...Object.values(daysMap || {}));
+  // 1st of month → which weekday (0=Sun) does it land on
+  const firstDow = new Date(Date.UTC(year, month - 1, 1)).getUTCDay();
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  // Build a flat array of slots from the first Sunday of the visible grid.
+  const slots = [];
+  for (let i = 0; i < firstDow; i++) slots.push(null);
+  for (let d = 1; d <= daysInMonth; d++) {
+    const dd = String(d).padStart(2, '0');
+    const mm = String(month).padStart(2, '0');
+    const key = `${year}-${mm}-${dd}`;
+    slots.push({ key, count: daysMap[key] || 0 });
+  }
+  while (slots.length % 7 !== 0) slots.push(null);
+  const weeks = slots.length / 7;
+  // Group columns (week=column, 7 days=rows). slots are filled row-major
+  // (week-row), so column j contains slots[col=j*7+row].
+  // Actually easier: re-group into 7 rows × N columns where row=DOW.
+  const cols = [];
+  for (let w = 0; w < weeks; w++) {
+    const wcells = [];
+    for (let r = 0; r < 7; r++) {
+      const cell = slots[w * 7 + r];
+      if (cell === null) {
+        wcells.push(`<div class="day empty"></div>`);
+        continue;
+      }
+      const lvl = heatLevel(cell.count, max);
+      const cls = `day l${lvl}${state.selectedDate === cell.key ? ' active' : ''}${cell.count === 0 ? ' empty' : ''}`;
+      const title = `${cell.key} · ${cell.count} turns`;
+      const attr = cell.count > 0 ? ` data-date="${cell.key}"` : '';
+      wcells.push(`<div class="${cls}" title="${title}"${attr}></div>`);
+    }
+    cols.push(`<div class="week">${wcells.join('')}</div>`);
+  }
+  const wrap = document.createElement('div');
+  wrap.className = 'heatmap-mini';
+  wrap.innerHTML = cols.join('');
+  for (const el of wrap.querySelectorAll('.day[data-date]')) {
+    el.onclick = (ev) => { ev.stopPropagation(); selectDate(el.getAttribute('data-date')); };
+  }
+  return wrap;
+}
+
+// ── Selection actions ──
+async function selectTopic(id) {
+  state.selectedTopicId = id;
+  state.selectedSubId = null;
+  state.searchActive = false;
+  await loadSubTree();
+  renderTopics();
+  renderSubtopics();
+  await refreshBody();
+}
+async function selectSub(id) {
+  state.selectedSubId = id;
+  state.searchActive = false;
+  renderSubtopics();
+  await refreshBody();
+}
+async function selectDate(d) {
+  state.selectedDate = state.selectedDate === d ? null : d;
+  state.searchActive = false;
+  renderDateTree();
+  renderSidebarHeatmap();
+  await refreshBody();
+}
+
+// ── Body render ──
+// Dashboard data cache — refreshed by loadDashboard().
+state.dashboard = null;
+state.ledger = null; // P4 — ingest_ledger summary (latest N + local diff)
+state.onThisDay = null; // P7 — dedicated /on-this-day endpoint (year + days_ago)
+state.wikiIndex = null; // P7 — cached entity-index payload
+
+async function loadDashboard() {
+  if (!WORKSPACE_ID) return;
+  const pill = $('stats-pill');
+  pill.classList.add('loading');
+  let data;
+  try {
+    data = await post('/dashboard', { workspace_id: WORKSPACE_ID });
+  } catch (e) {
+    pill.textContent = '통계 로드 실패';
+    pill.classList.remove('loading');
+    state.dashboard = null;
+    return;
+  }
+  state.dashboard = data;
+  renderStatsPill(data.stats);
+}
+
+async function loadLedger({ includeLocalDiff = true, limit = 12 } = {}) {
+  if (!WORKSPACE_ID) return null;
+  try {
+    const data = await post('/ingest-ledger', {
+      workspace_id: WORKSPACE_ID,
+      include_local_diff: includeLocalDiff,
+      limit,
+    });
+    state.ledger = data;
+    return data;
+  } catch (e) {
+    state.ledger = null;
+    return null;
+  }
+}
+
+// P7 — fetch /on-this-day fresh on home render; small payload, no caching.
+async function loadOnThisDay() {
+  if (!WORKSPACE_ID) { state.onThisDay = null; return null; }
+  try {
+    const data = await post('/on-this-day', { workspace_id: WORKSPACE_ID, limit: 10 });
+    state.onThisDay = data;
+    return data;
+  } catch (e) {
+    state.onThisDay = null;
+    return null;
+  }
+}
+
+// Today's Brief — cross-ws (workspace 미지정) 또는 현재 ws deep.
+// 백엔드 /brief endpoint 가 아직 안 떠 있어도 카드 자체는 fallback 으로 표시.
+async function loadBrief() {
+  if (!WORKSPACE_ID) { state.brief = null; return null; }
+  const body = state.briefMode === 'deep'
+    ? { workspace_id: WORKSPACE_ID, detail: 'brief' }
+    : {};
+  try {
+    const data = await post('/brief', body);
+    state.brief = data;
+    return data;
+  } catch (e) {
+    // endpoint 가 없거나 실패 — 카드는 fallback 메시지로 그려짐
+    state.brief = null;
+    console.warn('brief load failed', e.message || e);
+    return null;
+  }
+}
+
+function renderStatsPill(s) {
+  const pill = $('stats-pill');
+  if (!s) {
+    pill.textContent = '…';
+    return;
+  }
+  const range = (s.first_date && s.last_date) ? `${s.first_date}~${s.last_date}` : '데이터 없음';
+  pill.classList.remove('loading');
+  pill.innerHTML = `
+    <span class="live"></span>
+    <span><span class="num">${(s.episode_count || 0).toLocaleString()}</span> <span class="unit">일기</span></span>
+    <span class="sep">·</span>
+    <span><span class="num">${(s.turn_count || 0).toLocaleString()}</span> <span class="unit">turn</span></span>
+    <span class="sep">·</span>
+    <span class="range">${escapeHtml(range)}</span>
+  `;
+}
+
+// Today's Brief — Home grid 첫 행 (span-2).
+// 3섹션 적층: 활성 ws / 최근 thread / 다음 추천.
+// 백엔드 /brief 가 비어있거나 실패해도 카드 자체는 항상 그려진다 (fallback).
+function renderBriefCard() {
+  const b = state.brief;
+  const modeLabel = state.briefMode === 'deep' ? 'deep · 현재 ws' : 'cross · 활성 합계';
+  const modeBadgeText = state.briefMode === 'deep'
+    ? `${WORKSPACE_NAME || '현재 ws'}만`
+    : '전체 워크스페이스';
+  const modeBadgeHtml = `<span class="brief-mode-badge">${escapeHtml(modeBadgeText)}</span>`;
+
+  // Fallback: 백엔드 endpoint 없거나 데이터 부족
+  if (!b) {
+    return `
+      <div class="home-card span-2 brief-card" id="brief-card">
+        <h3>
+          <span>오늘의 브리핑${modeBadgeHtml}</span>
+          <span class="brief-head-meta">
+            <span class="count" id="brief-count-meta">${escapeHtml(modeLabel)}</span>
+            <button type="button" id="brief-reload"      class="brief-act brief-act-icon" title="새로고침">↻</button>
+            <button type="button" id="brief-toggle-deep" class="brief-act">${state.briefMode === 'deep' ? '전체 보기' : '현재 ws 깊게'}</button>
+          </span>
+        </h3>
+        <div class="brief-fallback">
+          자비스가 아직 충분히 모르고 있어요. 일기 한두 번 더 쓰면 채워질 거예요.<br>
+          (백엔드 <code>/api/v1/memory/brief</code> 응답 대기 중…)
+        </div>
+      </div>`;
+  }
+
+  const wss     = b.active_workspaces      || [];
+  const threads = b.recent_threads         || [];
+  const recs    = b.next_recommendations   || [];
+  const dq      = b.data_quality           || {};
+  const metaLine = `${b.mode || 'cross'} · ${wss.length} ws${dq.fact_count_active != null ? ` · ${dq.fact_count_active} fact` : ''}`;
+
+  const wsHtml = wss.length === 0
+    ? `<div class="empty-mini">활성 워크스페이스가 없어요</div>`
+    : `<div class="brief-ws-grid">${wss.map(w => renderBriefWsChip(w)).join('')}</div>`;
+
+  const threadsHtml = threads.length === 0
+    ? `<div class="empty-mini">최근 14일 작업 흐름이 없어요</div>`
+    : `<ol class="brief-thread-list">${threads.map((t, i) => renderBriefThread(t, i+1)).join('')}</ol>`;
+
+  const recsHtml = recs.length === 0
+    ? `<div class="empty-mini">추천할 신호가 아직 없어요 — 일기 한 번 더 쓰면 우선순위가 잡힙니다</div>`
+    : `<div class="brief-rec-grid">${recs.map(r => renderBriefRec(r)).join('')}</div>`;
+
+  return `
+    <div class="home-card span-2 brief-card" id="brief-card">
+      <h3>
+        <span>오늘의 브리핑${modeBadgeHtml}</span>
+        <span class="brief-head-meta">
+          <span class="count" id="brief-count-meta">${escapeHtml(metaLine)}</span>
+          <button type="button" id="brief-reload"      class="brief-act brief-act-icon" title="새로고침">↻</button>
+          <button type="button" id="brief-toggle-deep" class="brief-act">${state.briefMode === 'deep' ? '전체 보기' : '현재 ws 깊게'}</button>
+        </span>
+      </h3>
+      <section class="brief-section" data-section="ws">
+        <div class="brief-section-h">활성 워크스페이스 <span class="brief-section-count">${wss.length}</span></div>
+        ${wsHtml}
+      </section>
+      <div class="brief-divider"></div>
+      <section class="brief-section" data-section="threads">
+        <div class="brief-section-h">최근 작업 흐름 <span class="brief-section-count">${threads.length}</span></div>
+        ${threadsHtml}
+      </section>
+      <div class="brief-divider"></div>
+      <section class="brief-section" data-section="recs">
+        <div class="brief-section-h">다음 추천 <span class="brief-section-count">${recs.length}</span></div>
+        ${recsHtml}
+      </section>
+    </div>`;
+}
+
+// 활성 ws 칩 — ACTIVE / QUIET / DORMANT 톤 자동 매핑.
+// 2줄 위계:
+//   Line1 = 이름(15px 700)
+//   Line2 = cumulative_summary 있으면 "지금까지 흐름" 한 단락(2줄 clamp)
+//           없으면 기존 fallback: signal · ep · tail · subjects
+function renderBriefWsChip(w) {
+  const tag = w.activity_tag || 'DORMANT';
+  const cumulative = (w.ws_cumulative_summary || w.cumulative_summary || '').trim();
+
+  let subHtml;
+  let subClass = 'brief-ws-sub';
+  if (cumulative) {
+    // 내용 신호 모드 — 자연어 한 단락, CSS 로 2줄 clamp
+    // 마크다운 렌더 (DOMPurify) — chip 안 2줄 clamp 이라 인라인 강조 정도만 보임,
+    // 블록(코드/리스트) 토큰은 clamp 으로 잘려도 시각 잡음 적음.
+    subHtml = safeMarkdown(cumulative);
+    subClass += ' is-cumulative';
+  } else {
+    // 활동 신호 fallback — 기존 칩 라인
+    const subjects = (w.top_subjects_14d || []).slice(0, 2).join(' · ');
+    const signal   = w.signal_line || (tag === 'DORMANT' ? '14일+ 미접속' : '');
+    const epNum    = w.ep_count_total != null ? String(w.ep_count_total) : '';
+    const tailHtml = w.ep_count_yesterday
+      ? `<span>어제 <span class="num">${w.ep_count_yesterday}</span></span>`
+      : (w.turn_count_7d ? `<span>7d <span class="num">${w.turn_count_7d}</span> turn</span>` : '');
+
+    const parts = [];
+    if (signal)    parts.push(`<span class="signal">${escapeHtml(signal)}</span>`);
+    if (epNum)     parts.push(`<span><span class="num">${escapeHtml(epNum)}</span> 일기</span>`);
+    if (tailHtml)  parts.push(tailHtml);
+    if (subjects)  parts.push(`<span title="${escapeHtml(subjects)}">${escapeHtml(subjects)}</span>`);
+    subHtml = parts.join('<span class="sep">·</span>');
+  }
+
+  const titleAttr = cumulative ? ` title="${escapeHtml(cumulative)}"` : '';
+  const wsId = w.id || w.workspace_id || '';
+  const isCurrent = wsId && wsId === WORKSPACE_ID;
+
+  return `
+    <button type="button" class="brief-ws-chip${tag === 'DORMANT' ? ' is-dormant' : ''}${isCurrent ? ' is-current' : ''}"
+            data-ws-id="${escapeHtml(wsId)}"
+            data-ws-name="${escapeHtml(w.name || '')}"${titleAttr}>
+      <div class="brief-ws-chip-head">
+        <span class="brief-ws-dot" data-tag="${escapeHtml(tag)}"></span>
+        <span class="brief-ws-name">${escapeHtml(w.name || '')}</span>
+        <span class="brief-ws-tag">${escapeHtml(tag)}</span>
+      </div>
+      <div class="${subClass}">${subHtml}</div>
+    </button>`;
+}
+
+// 최근 thread 한 줄 — rank/ws/subject/meta/summary.
+function renderBriefThread(t, rank) {
+  const missing = t.is_summary_missing ? ' is-missing' : '';
+  const summary = t.summary || (t.is_summary_missing ? '요약 없음 — 클릭하면 본문' : '');
+  const dateTail = (t.last_active_date || '').slice(5);  // MM-DD
+  const meta    = `${t.turn_count_14d || 0} turn${dateTail ? ' · ' + dateTail : ''}`;
+  return `
+    <li class="brief-thread${missing}"
+        data-ws-id="${escapeHtml(t.workspace_id || '')}"
+        data-ws-name="${escapeHtml(t.workspace_name || '')}"
+        data-subject-id="${escapeHtml(t.subject_id || '')}"
+        data-target-date="${escapeHtml(t.last_active_date || '')}">
+      <span class="brief-thread-rank">${rank}</span>
+      <div class="brief-thread-body">
+        <div class="brief-thread-head">
+          <span class="brief-thread-ws">${escapeHtml(t.workspace_name || '')}</span>
+          <span class="brief-thread-sep">·</span>
+          <span class="brief-thread-subject">${escapeHtml(t.subject_name || '')}</span>
+          <span class="brief-thread-meta">${escapeHtml(meta)}</span>
+        </div>
+        <div class="brief-thread-summary">${safeMarkdown(summary)}</div>
+      </div>
+    </li>`;
+}
+
+// 추천 카드 — rank/ws/reason/title/detail.
+function renderBriefRec(r) {
+  const reasonLabel = (r.reason_code || '').replace(/_/g, ' ');
+  return `
+    <button type="button" class="brief-rec-new"
+            data-target-kind="${escapeHtml(r.target_kind || '')}"
+            data-target-id="${escapeHtml(r.target_id || '')}"
+            data-ws-id="${escapeHtml(r.workspace_id || '')}"
+            data-ws-name="${escapeHtml(r.workspace_name || '')}"
+            data-target-date="${escapeHtml(r.target_date || '')}">
+      <div class="brief-rec-new-head">
+        <span class="brief-rec-new-rank">${r.rank}</span>
+        <span class="brief-rec-new-ws" title="${escapeHtml(r.workspace_name || '')}">${escapeHtml(r.workspace_name || '')}</span>
+        <span class="brief-rec-new-reason" data-reason="${escapeHtml(r.reason_code || '')}">${escapeHtml(reasonLabel)}</span>
+      </div>
+      <div class="brief-rec-new-title">${escapeHtml(r.title || '')}</div>
+      <div class="brief-rec-new-detail">${safeMarkdown(r.detail || '')}</div>
+    </button>`;
+}
+
+function renderHomeDashboard() {
+  const d = state.dashboard;
+  if (!d) {
+    return `<div class="empty">대시보드 로드 중…</div>`;
+  }
+  // Empty workspace guide (P9.3) — episode_count < 5
+  const epCount = (d.stats && d.stats.episode_count) || 0;
+  if (epCount < 5) {
+    return renderEmptyWorkspaceGuide(epCount);
+  }
+
+  // Block B — 최근 7일 (recent_summaries) — P8: group by date, render
+  // JARVIS·Argos side-by-side so a day with both projects is visible
+  // at-a-glance. Rows with turn_count=0 are paused-day stubs (still
+  // shown, dimmed) — sidebar drill-down is disabled for them since
+  // there's no real turn feed behind them.
+  const renderRecentRow = (r) => {
+    const isPaused = (r.unique_turn_count === 0 && r.turn_count === 0);
+    const preview = (r.summary || '').slice(0, 240);
+    const tcount = r.unique_turn_count || r.turn_count || 0;
+    const dataAttrs = isPaused
+      ? ''
+      : ` data-sid="${r.subject_id}" data-date="${r.date}"`;
+    const tlabel = isPaused ? '휴지일' : `${tcount} turns`;
+    return `
+      <div class="recent-row${isPaused ? ' paused' : ''}"${dataAttrs}>
+        <div class="head">
+          <span class="subj">${escapeHtml(r.subject_name)}</span>
+          <span class="turn-n">${tlabel}</span>
+        </div>
+        <div class="preview">${safeMarkdown(preview)}${preview.length < (r.summary || '').length ? '…' : ''}</div>
+      </div>`;
+  };
+
+  const byDate = new Map();
+  for (const r of (d.recent_summaries || [])) {
+    if (!byDate.has(r.date)) byDate.set(r.date, []);
+    byDate.get(r.date).push(r);
+  }
+  const sortedDates = Array.from(byDate.keys()).sort((a, b) => b.localeCompare(a));
+  const recentBlock = sortedDates.length > 0
+    ? sortedDates.map(dt => {
+        // Stable order: alphabetical so JARVIS·Argos columns don't flip.
+        const rows = byDate.get(dt).slice().sort((a, b) =>
+          (a.subject_name || '').localeCompare(b.subject_name || ''));
+        const pairClass = rows.length >= 2 ? 'pair' : 'pair single';
+        return `
+          <div class="recent-day">
+            <div class="day-label">${dt}</div>
+            <div class="${pairClass}">${rows.map(renderRecentRow).join('')}</div>
+          </div>`;
+      }).join('')
+    : `<div class="empty-mini">최근 7일 정리된 일기가 없어요 — '오늘 정리해'로 채워보세요</div>`;
+
+  // Block C — On This Day (P7 — uses dedicated /on-this-day endpoint so we
+  // get `year` + a higher cap than what /dashboard returns).
+  const otd = state.onThisDay;
+  const otdMatches = (otd && otd.matches && otd.matches.length > 0)
+    ? otd.matches
+    : ((d.on_this_day && d.on_this_day.length > 0) ? d.on_this_day : null);
+  const otdBlock = otdMatches
+    ? otdMatches.map(o => {
+        const yearTag = o.year ? ` · ${o.year}` : '';
+        return `
+        <div class="otd-row" data-eid="${o.episode_id || ''}" data-date="${o.date}">
+          <div class="otd-meta">${o.date}${yearTag} · <span class="days-ago">${o.days_ago}일 전</span>${o.turn_count ? ` · ${o.turn_count} turns` : ''}</div>
+          <div class="otd-sum">${safeMarkdown(o.summary || '(요약 없음)')}</div>
+        </div>`;
+      }).join('')
+    : `<div class="empty-mini">아직 같은 날짜의 과거 기록이 없어요 — 데이터 쌓이는 중</div>`;
+
+  // Block D — Top Entities
+  const topBlock = (d.top_entities && d.top_entities.length > 0)
+    ? `<div class="top-ent-chips">${
+        d.top_entities.map(e => `
+          <span class="top-ent-chip" data-eid="${e.entity_id}" title="${escapeHtml(e.name)} · 사실 ${e.fact_count} · 관계 ${e.relation_count}">
+            <span class="ent-name">${escapeHtml(e.name)}</span>
+            <span class="ent-stat">${e.fact_count}·${e.relation_count}</span>
+          </span>`).join('')
+      }</div>`
+    : `<div class="empty-mini">아직 추출된 엔티티 없음</div>`;
+
+  // Block E — Ingest 장부 (P4)
+  const ledgerBlock = renderLedgerWidget();
+
+  return `
+    <div class="home-dashboard">
+      ${renderBriefCard()}
+      <div class="home-card">
+        <h3>오늘 · 어제 · 이번 주 <span class="count">최근 ${sortedDates.length}일 · ${d.recent_summaries.length}건</span></h3>
+        ${recentBlock}
+      </div>
+      <div class="home-card">
+        <h3>On This Day <span class="count">${(otdMatches || []).length}건</span></h3>
+        ${otdBlock}
+      </div>
+      <div class="home-card span-2">
+        <h3>위키 Top Entities <span class="count">${d.top_entities.length}건 · 사실·관계 순</span></h3>
+        ${topBlock}
+      </div>
+      <div class="home-card span-2">
+        ${ledgerBlock}
+      </div>
+    </div>
+  `;
+}
+
+// Pretty-print bytes as KB / MB.
+function fmtBytes(n) {
+  if (!n && n !== 0) return '';
+  if (n < 1024) return `${n}B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)}KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)}MB`;
+}
+
+// Pretty-print an ISO timestamp as "MM-DD HH:mm".
+function fmtLedgerTs(iso) {
+  try {
+    const dt = new Date(iso);
+    const mm = String(dt.getMonth() + 1).padStart(2, '0');
+    const dd = String(dt.getDate()).padStart(2, '0');
+    const hh = String(dt.getHours()).padStart(2, '0');
+    const mi = String(dt.getMinutes()).padStart(2, '0');
+    return `${mm}-${dd} ${hh}:${mi}`;
+  } catch (_) {
+    return iso || '';
+  }
+}
+
+function basename(p) {
+  if (!p) return '(unknown)';
+  const idx = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'));
+  return idx >= 0 ? p.slice(idx + 1) : p;
+}
+
+function renderLedgerWidget() {
+  const lg = state.ledger;
+  // Head with title + diff badges
+  const notIngested = lg?.local_diff_summary?.not_ingested ?? 0;
+  const matched = lg?.local_diff_summary?.matched ?? 0;
+  const totalLedger = lg?.total ?? 0;
+
+  const diffBadge = (notIngested > 0)
+    ? `<span class="ledger-badge warn" data-action="open-ledger" title="안 올라간 본대화 ${notIngested}건 — 클릭하면 목록">
+         · 안 올라간 본대화 ${notIngested}건
+       </span>`
+    : `<span class="ledger-badge" data-action="open-ledger" title="모든 본대화가 자비스에 올라가 있음">
+         · 본대화 ${matched}건 전부 올라감
+       </span>`;
+
+  const head = `
+    <div class="ledger-head">
+      <h3 style="margin-bottom: 0;">Ingest 장부 <span class="count">${totalLedger}건 누적</span></h3>
+      ${diffBadge}
+      <span class="ledger-badge" data-action="open-ledger" title="전체 ledger 보기">· 전체 보기</span>
+    </div>`;
+
+  if (!lg || !lg.entries || lg.entries.length === 0) {
+    return head + `<div class="empty-mini">아직 ingest 기록 없음 — 자비스에 일기를 올리면 여기 누적됩니다</div>`;
+  }
+
+  // Show the most recent ~8 entries inline
+  const rows = lg.entries.slice(0, 8).map(e => {
+    const dec = e.dedup_decision || 'new';
+    const fname = basename(e.source_file_path) || e.external_session_id || '(unnamed)';
+    return `
+      <div class="ledger-row" title="${escapeHtml(e.source_file_path || '')}">
+        <span class="ts">${fmtLedgerTs(e.ingested_at)}</span>
+        <span class="fname">${escapeHtml(fname)}</span>
+        <span class="turn-n">${(e.turn_count || 0).toLocaleString()} turns</span>
+        <span class="via">${escapeHtml(e.ingested_via || 'unknown')}</span>
+        <span class="dedup-tag ${escapeHtml(dec)}">${escapeHtml(dec)}</span>
+      </div>`;
+  }).join('');
+
+  return head + `<div class="ledger-rows">${rows}</div>`;
+}
+
+function openLedgerModal() {
+  const lg = state.ledger;
+  if (!lg) return;
+
+  const allRows = (lg.entries || []).map(e => {
+    const dec = e.dedup_decision || 'new';
+    const fname = basename(e.source_file_path) || e.external_session_id || '(unnamed)';
+    return `
+      <div class="ledger-row" title="${escapeHtml(e.source_file_path || '')}">
+        <span class="ts">${fmtLedgerTs(e.ingested_at)}</span>
+        <span class="fname">${escapeHtml(fname)}</span>
+        <span class="turn-n">${(e.turn_count || 0).toLocaleString()} turns</span>
+        <span class="via">${escapeHtml(e.ingested_via || 'unknown')}</span>
+        <span class="dedup-tag ${escapeHtml(dec)}">${escapeHtml(dec)}</span>
+      </div>`;
+  }).join('') || `<div class="empty-mini">ingest 기록 없음</div>`;
+
+  const diffRows = (lg.local_diff || []).map(d => {
+    const tag = d.status === 'not_ingested' ? 'rejected' : 'new';
+    const label = d.status === 'not_ingested' ? '안 올라감' : `올라감 (${d.ingested_count}회)`;
+    return `
+      <div class="ledger-row" title="${escapeHtml(d.local_file_path)}">
+        <span class="ts">${fmtBytes(d.local_size)}</span>
+        <span class="fname">${escapeHtml(basename(d.local_file_path))}</span>
+        <span class="via">${escapeHtml(d.external_session_id || '')}</span>
+        <span class="dedup-tag ${tag}">${label}</span>
+      </div>`;
+  }).join('') || `<div class="empty-mini">로컬 스캔 데이터 없음 (include_local_diff=false?)</div>`;
+
+  const modal = document.createElement('div');
+  modal.className = 'ledger-modal';
+  modal.innerHTML = `
+    <div class="inner">
+      <button class="close" aria-label="닫기">×</button>
+      <h2>Ingest 장부 — 본대화 N개 중 무엇이 올라갔나</h2>
+      <div class="sub">최근 ingest ${lg.entries?.length || 0}건 · 로컬 jsonl ${lg.local_diff?.length || 0}건 (≥100KB)</div>
+      <div class="scroll">
+        <section>
+          <h3>최근 ingest 타임라인</h3>
+          <div class="ledger-rows">${allRows}</div>
+        </section>
+        <section>
+          <h3>로컬 ↔ 클라우드 대조</h3>
+          <div class="ledger-rows">${diffRows}</div>
+        </section>
+      </div>
+    </div>`;
+  modal.onclick = (ev) => {
+    if (ev.target === modal || ev.target.classList.contains('close')) {
+      modal.remove();
+    }
+  };
+  document.body.appendChild(modal);
+}
+
+// P7 — Wiki index modal. Reuses the entity-modal backdrop so closing on
+// backdrop click + Escape Just Work (already wired below).
+async function openWikiIndex() {
+  const modal = $('entity-modal');
+  modal.classList.add('open');
+  modal.innerHTML = `
+    <div class="wiki-modal">
+      <header><h2>위키</h2><div class="ent-meta">로드 중…</div></header>
+    </div>`;
+  let data;
+  try {
+    data = await post('/entity-index', { workspace_id: WORKSPACE_ID });
+  } catch (e) {
+    modal.innerHTML = `
+      <div class="wiki-modal">
+        <button class="close-x" id="wiki-close">×</button>
+        <header><h2>위키</h2><div class="ent-meta">로드 실패: ${escapeHtml(e.message)}</div></header>
+      </div>`;
+    $('wiki-close').onclick = closeEntityModal;
+    return;
+  }
+  state.wikiIndex = data;
+  renderWikiIndexModal(data);
+}
+
+// Korean group labels per entity_type. Falls back to raw type for anything
+// the dictionary doesn't cover (future enum values land here harmlessly).
+const ENTITY_TYPE_KR = {
+  concept: '개념',
+  product: '제품·도구',
+  person: '인물',
+  organization: '조직',
+  location: '장소',
+  event: '이벤트',
+  preference: '선호',
+  procedure: '절차',
+  episode_topic: '세션 라벨',
+  other: '기타',
+};
+
+function renderWikiIndexModal(data) {
+  const modal = $('entity-modal');
+  const groups = data.groups || [];
+  const totalEnt = groups.reduce((s, g) => s + (g.entities?.length || 0), 0);
+  const groupBlocks = groups.length === 0
+    ? `<div class="wiki-empty">아직 추출된 엔티티가 없습니다 — 일기를 올리면 채워집니다</div>`
+    : groups.map(g => {
+        const label = ENTITY_TYPE_KR[g.entity_type] || g.entity_type;
+        const entries = (g.entities || []).map(e => {
+          const parent = e.parent_name
+            ? `<span class="parent" title="${escapeHtml(e.parent_name)}">↳ ${escapeHtml(e.parent_name)}</span>`
+            : `<span class="parent"></span>`;
+          const seen = e.last_seen_date ? `${e.last_seen_date}` : '';
+          const stat = `<span class="stat">f${e.fact_count}·r${e.relation_count}${seen ? ' · '+seen : ''}</span>`;
+          return `
+            <div class="wiki-entry" data-eid="${e.entity_id}" title="${escapeHtml(e.name)}">
+              <div class="name">${escapeHtml(e.name)}</div>
+              <div class="sub">${parent}${stat}</div>
+            </div>`;
+        }).join('');
+        return `
+          <section class="wiki-group">
+            <h3>${escapeHtml(label)} <span class="count">${g.entities.length}건</span></h3>
+            <div class="wiki-grid">${entries}</div>
+          </section>`;
+      }).join('');
+  // Stage 2C — list/graph mode toggle. Graph reuses the same modal so
+  // backdrop-click + Escape still close it (already wired upstream).
+  const mode = state.wikiViewMode || 'list';
+  modal.innerHTML = `
+    <div class="wiki-modal">
+      <button class="close-x" id="wiki-close">×</button>
+      <header>
+        <h2>위키 — ${escapeHtml(WORKSPACE_NAME || '')}</h2>
+        <div class="ent-meta">${groups.length}개 그룹 · ${totalEnt}개 엔티티 (세션 라벨 제외)</div>
+        <div class="wiki-mode-toggle" role="tablist">
+          <button type="button" data-mode="list" class="${mode === 'list' ? 'active' : ''}">List</button>
+          <button type="button" data-mode="graph" class="${mode === 'graph' ? 'active' : ''}">Graph</button>
+        </div>
+      </header>
+      <div class="wiki-body">
+        <div id="wiki-list-view" style="display: ${mode === 'list' ? 'block' : 'none'};">${groupBlocks}</div>
+        <div id="wiki-graph-view" style="display: ${mode === 'graph' ? 'block' : 'none'};">
+          <div class="graph-empty">그래프 로드 중…</div>
+        </div>
+      </div>
+    </div>`;
+  $('wiki-close').onclick = closeEntityModal;
+  for (const el of modal.querySelectorAll('.wiki-entry[data-eid]')) {
+    el.onclick = () => openEntityPage(el.getAttribute('data-eid'));
+  }
+  for (const btn of modal.querySelectorAll('.wiki-mode-toggle button[data-mode]')) {
+    btn.onclick = () => {
+      const newMode = btn.getAttribute('data-mode');
+      if (newMode === state.wikiViewMode) return;
+      state.wikiViewMode = newMode;
+      for (const b of modal.querySelectorAll('.wiki-mode-toggle button[data-mode]')) {
+        b.classList.toggle('active', b.getAttribute('data-mode') === newMode);
+      }
+      $('wiki-list-view').style.display  = newMode === 'list'  ? 'block' : 'none';
+      $('wiki-graph-view').style.display = newMode === 'graph' ? 'block' : 'none';
+      if (newMode === 'graph') loadGraph();
+    };
+  }
+  if (mode === 'graph') loadGraph();
+}
+
+// Stage 2C — D3 force-directed graph view of the workspace entity network.
+// `/graph` returns hub-cut nodes (top-N by relation_count) + edges whose
+// both endpoints survive the cut. Node click reuses `openEntityPage` so
+// state.entityStack / backdrop-close already Just Work.
+
+// entity_type -> swatch color. Falls back to var(--text-3) for unknown.
+const GRAPH_TYPE_COLOR = {
+  concept:      '#6b8bd6',
+  product:      '#d6a86b',
+  person:       '#9b6bd6',
+  organization: '#6bd6c9',
+  location:     '#d66b8b',
+  event:        '#6bd68b',
+  preference:   '#d6c96b',
+  procedure:    '#a8d66b',
+  other:        '#8a8a8a',
+};
+
+async function loadGraph() {
+  const mount = $('wiki-graph-view');
+  if (!mount) return;
+  mount.innerHTML = `<div class="graph-empty">그래프 로드 중…</div>`;
+  let data;
+  try {
+    data = await post('/graph', {
+      workspace_id: WORKSPACE_ID,
+      limit: 100,
+      min_rel_cnt: 1,
+    });
+  } catch (e) {
+    mount.innerHTML = `<div class="graph-empty">로드 실패: ${escapeHtml(e.message)}</div>`;
+    return;
+  }
+  state.graphData = data;
+  renderEntityGraph(data);
+}
+
+function renderEntityGraph(data) {
+  const mount = $('wiki-graph-view');
+  if (!mount) return;
+  const nodes = (data.nodes || []).map(n => ({ ...n }));  // d3 mutates in place
+  const edges = (data.edges || []).map(e => ({
+    source: String(e.from_id),
+    target: String(e.to_id),
+    relation_type: e.relation_type,
+    weight: e.weight || 1,
+  }));
+  if (nodes.length === 0) {
+    mount.innerHTML = `<div class="graph-empty">관계가 있는 엔티티가 없습니다 (min_rel_cnt ≥ 1)</div>`;
+    return;
+  }
+
+  // Distinct relation_types appearing in the current cut, for the legend.
+  const relTypesInEdges = [...new Set(edges.map(e => e.relation_type))];
+  const legendItems = relTypesInEdges.map(rt => {
+    const cls = ['part_of', 'depends_on', 'supports', 'contradicts', 'related_to'].includes(rt) ? rt : 'related_to';
+    return `<span class="legend"><span class="swatch" style="width: 16px; height: 3px; border-radius: 0; background: var(--text-3);"></span><span style="color:var(--text-3);">${escapeHtml(rt)}</span></span>`;
+  }).slice(0, 5).join('');
+
+  mount.innerHTML = `
+    <div class="graph-controls">
+      <span>${data.returned_nodes}/${data.total_entities} 노드 · ${edges.length} 엣지</span>
+      <span style="flex:1;"></span>
+      <span style="color:var(--text-3);">드래그로 노드 이동 · 휠로 줌 · 클릭 → 엔티티 페이지</span>
+    </div>
+    <div class="graph-view" id="graph-canvas"></div>`;
+
+  const canvas = $('graph-canvas');
+  const width  = canvas.clientWidth  || 900;
+  const height = canvas.clientHeight || 600;
+
+  const svg = d3.select(canvas).append('svg')
+    .attr('viewBox', `0 0 ${width} ${height}`)
+    .attr('preserveAspectRatio', 'xMidYMid meet');
+
+  // Root <g> that zoom transforms apply to.
+  const root = svg.append('g');
+  svg.call(d3.zoom()
+    .scaleExtent([0.25, 4])
+    .on('zoom', (ev) => root.attr('transform', ev.transform)));
+
+  // rel_cnt → radius (sqrt scale so very-high-degree hubs don't dominate).
+  const maxRel = d3.max(nodes, d => d.rel_cnt) || 1;
+  const rScale = d3.scaleSqrt().domain([0, maxRel]).range([5, 18]);
+
+  const sim = d3.forceSimulation(nodes)
+    .force('link', d3.forceLink(edges).id(d => String(d.id)).distance(80).strength(0.4))
+    .force('charge', d3.forceManyBody().strength(-200))
+    .force('center', d3.forceCenter(width / 2, height / 2))
+    .force('collide', d3.forceCollide().radius(d => rScale(d.rel_cnt) + 4));
+
+  const link = root.append('g').attr('class', 'graph-links')
+    .selectAll('line')
+    .data(edges)
+    .join('line')
+      .attr('class', d => {
+        const known = ['part_of', 'depends_on', 'supports', 'contradicts', 'related_to'];
+        const cls = known.includes(d.relation_type) ? d.relation_type : 'related_to';
+        return `graph-link ${cls}`;
+      })
+      .attr('stroke-width', d => Math.min(1 + Math.log2(d.weight + 1), 4));
+
+  const node = root.append('g').attr('class', 'graph-nodes')
+    .selectAll('g')
+    .data(nodes)
+    .join('g')
+      .attr('class', 'graph-node')
+      .call(d3.drag()
+        .on('start', (ev, d) => { if (!ev.active) sim.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
+        .on('drag',  (ev, d) => { d.fx = ev.x; d.fy = ev.y; })
+        .on('end',   (ev, d) => { if (!ev.active) sim.alphaTarget(0); d.fx = null; d.fy = null; }))
+      .on('click', (ev, d) => { ev.stopPropagation(); openEntityPage(String(d.id)); });
+
+  node.append('title').text(d =>
+    `${d.name}\n${d.entity_type} · rel=${d.rel_cnt}${d.has_wiki ? ' · wiki' : ''}`
+  );
+
+  node.append('circle')
+    .attr('r', d => rScale(d.rel_cnt))
+    .attr('fill', d => GRAPH_TYPE_COLOR[d.entity_type] || GRAPH_TYPE_COLOR.other)
+    .attr('stroke-dasharray', d => d.has_wiki ? null : '2,2');
+
+  node.append('text')
+    .attr('dx', d => rScale(d.rel_cnt) + 4)
+    .attr('dy', '0.32em')
+    .text(d => d.name.length > 24 ? d.name.slice(0, 22) + '…' : d.name);
+
+  sim.on('tick', () => {
+    link
+      .attr('x1', d => d.source.x).attr('y1', d => d.source.y)
+      .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
+    node.attr('transform', d => `translate(${d.x},${d.y})`);
+  });
+}
+
+// Today's Brief 카드 이벤트 — 추천/활성ws/최근thread 클릭, 새로고침/모드 토글.
+// ws 가 현재와 다르면 ws 전환 풀-리로드 (ws 드롭다운 핸들러 패턴 복제).
+function wireBriefCard() {
+  const card = $('brief-card');
+  if (!card) return;
+
+  // 공통 점프 — ws 전환이 필요하면 풀-리로드, 같은 ws 면 kind 별 점프.
+  const jumpToWorkspace = async (wsId, wsName, date, kind, tid) => {
+    if (wsId && wsId !== WORKSPACE_ID) {
+      WORKSPACE_ID = wsId;
+      WORKSPACE_NAME = wsName;
+      setWsLabel(wsName);
+      state.selectedTopicId = null;
+      state.selectedSubId = null;
+      state.selectedDate = date || null;
+      state.subTree = null;
+      state.subjectsMap = {};
+      state.searchActive = false;
+      state.onThisDay = null;
+      state.wikiIndex = null;
+      state.brief = null;
+      restoreLayout();
+      await Promise.all([
+        loadTopics(), loadDateTree(), loadSubTree(),
+        loadDashboard(), loadLedger(), loadOnThisDay(), loadBrief(),
+      ]);
+      await refreshBody();
+      return;
+    }
+    // 같은 ws 안 점프
+    if      (kind === 'subject'  && tid)  { if (date) state.selectedDate = date; selectTopicFromHome(tid); }
+    else if (kind === 'entity'   && tid)  { openEntityPage(tid); }
+    else if (kind === 'episode'  && date) { selectDate(date); }
+    else                                  { await refreshBody(); }
+  };
+
+  // 추천 카드
+  for (const btn of card.querySelectorAll('.brief-rec-new')) {
+    btn.onclick = () => jumpToWorkspace(
+      btn.dataset.wsId || '',
+      btn.dataset.wsName || '',
+      btn.dataset.targetDate || null,
+      btn.dataset.targetKind || '',
+      btn.dataset.targetId || '',
+    );
+  }
+  // 활성 ws 칩 → 단순 ws 전환
+  for (const chip of card.querySelectorAll('.brief-ws-chip')) {
+    chip.onclick = () => jumpToWorkspace(
+      chip.dataset.wsId || '',
+      chip.dataset.wsName || '',
+      null,
+      'workspace',
+      '',
+    );
+  }
+  // 최근 thread → subject 점프
+  for (const li of card.querySelectorAll('.brief-thread')) {
+    li.onclick = () => jumpToWorkspace(
+      li.dataset.wsId || '',
+      li.dataset.wsName || '',
+      li.dataset.targetDate || null,
+      'subject',
+      li.dataset.subjectId || '',
+    );
+  }
+
+  const reload = $('brief-reload');
+  if (reload) reload.onclick = async () => {
+    await loadBrief();
+    await refreshBody();
+  };
+  const toggle = $('brief-toggle-deep');
+  if (toggle) toggle.onclick = async () => {
+    state.briefMode = (state.briefMode === 'deep') ? 'cross' : 'deep';
+    await loadBrief();
+    await refreshBody();
+  };
+}
+
+function wireHomeDashboard() {
+  const body = $('chat-body');
+  if (!body) return;
+  wireBriefCard();
+  for (const el of body.querySelectorAll('.recent-row[data-sid]')) {
+    el.onclick = () => {
+      const sid = el.getAttribute('data-sid');
+      const date = el.getAttribute('data-date');
+      if (date) state.selectedDate = date;
+      // Use topic select to drive the standard refreshBody flow
+      selectTopicFromHome(sid);
+    };
+  }
+  for (const el of body.querySelectorAll('.top-ent-chip[data-eid]')) {
+    el.onclick = () => openEntityPage(el.getAttribute('data-eid'));
+  }
+  // P4 — Ingest 장부 badges
+  for (const el of body.querySelectorAll('[data-action="open-ledger"]')) {
+    el.onclick = () => openLedgerModal();
+  }
+  // P7 — On This Day rows → jump to that date
+  for (const el of body.querySelectorAll('.otd-row[data-date]')) {
+    el.style.cursor = 'pointer';
+    el.onclick = () => {
+      const d = el.getAttribute('data-date');
+      if (d) selectDate(d);
+    };
+  }
+  // P9.3 — Empty workspace guide CTA → switch to 자비스프로젝트 if available
+  const switchBtn = body.querySelector('#ws-switch-to-active');
+  if (switchBtn) {
+    switchBtn.onclick = async () => {
+      const target = (state.workspaces || []).find(w => w.name === '자비스 캡스톤 프로젝트')
+                  || (state.workspaces || []).find(w => w.name === '자비스프로젝트');
+      if (target) {
+        WORKSPACE_ID = target.id;
+        WORKSPACE_NAME = target.name;
+        setWsLabel(target.name);
+        state.selectedTopicId = null;
+        state.selectedSubId = null;
+        state.selectedDate = null;
+        state.subTree = null;
+        state.subjectsMap = {};
+        state.searchActive = false;
+        state.brief = null;
+        restoreLayout();
+        await Promise.all([loadTopics(), loadDateTree(), loadSubTree(), loadDashboard(), loadOnThisDay(), loadLedger(), loadBrief()]);
+        await refreshBody();
+      }
+    };
+  }
+}
+
+// Choose between selectTopic (top-level) and selectSub (sub) based on subjectsMap.
+async function selectTopicFromHome(sid) {
+  const meta = state.subjectsMap[sid];
+  if (meta && meta.parent_id) {
+    state.selectedTopicId = meta.parent_id;
+    await loadSubTree();
+    renderTopics();
+    state.selectedSubId = sid;
+    renderSubtopics();
+    state.searchActive = false;
+    await refreshBody();
+  } else {
+    await selectTopic(sid);
+  }
+}
+
+async function refreshBody(append = false) {
+  if (state.searchActive) return;
+  const head = $('chat-head');
+  const body = $('chat-body');
+
+  if (!append) state.turnsLimit = 1000;
+
+  // Decide which API
+  let turns = [];
+  let totalTurns = 0;
+  let hasMore = false;
+  let titleParts = [];
+  let req;
+  const targetSubId = state.selectedSubId || state.selectedTopicId;
+  if (targetSubId) {
+    req = { workspace_id: WORKSPACE_ID, subject_id: targetSubId, include_descendants: true, descending: false, limit: state.turnsLimit };
+    if (state.selectedDate) {
+      req.date_from = `${state.selectedDate}T00:00:00Z`;
+      req.date_to = nextDay(state.selectedDate) + 'T00:00:00Z';
+    }
+    const r = await post('/subject-feed', req);
+    turns = r.turns; totalTurns = r.total_turns ?? turns.length; hasMore = r.has_more === true;
+    titleParts.push(r.subject_name);
+  } else if (state.selectedDate) {
+    // 일기 모드: 날짜 단독 선택 → 그 날의 episode 일기 카드 list
+    await renderDiariesByDate(state.selectedDate);
+    return;
+  } else {
+    const stats = state.dashboard?.stats;
+    const range = (stats?.first_date && stats?.last_date) ? `${stats.first_date} ~ ${stats.last_date}` : '데이터 누적 중';
+    head.innerHTML = renderChatHeadHome(`홈 · ${range}`);
+    body.innerHTML = renderHomeDashboard();
+    wireHomeDashboard();
+    renderKeywordsAndSummary(null, []);
+    return;
+  }
+  state.totalTurns = totalTurns;
+  state.hasMore = hasMore;
+
+  // Title + meta
+  const tags = [];
+  if (state.selectedTopicId) {
+    const top = state.topics.find(t => t.subject_id === state.selectedTopicId);
+    if (top) tags.push(top.name);
+  }
+  if (state.selectedDate) tags.push(state.selectedDate);
+  const tagsHtml = tags.map(t => `<span class="tag">${escapeHtml(t)}</span>`).join('');
+  let metaLine = '';
+  if (turns.length > 0) {
+    const first = turns[0].timestamp;
+    const last = turns[turns.length - 1].timestamp;
+    const total = totalTurns || turns.length;
+    const shownNote = total > turns.length ? ` · 표시 ${turns.length} / ${total}` : '';
+    metaLine = `${dateKey(first)} · ${fmtTime(first)} — ${fmtTime(last)} KST · ${turns.length} turns${shownNote}`;
+  } else {
+    metaLine = '대화 없음';
+  }
+  head.innerHTML = `<h1>${escapeHtml(titleParts[0] || '일기')} ${tagsHtml}</h1><div class="meta">${metaLine}</div>`;
+
+  // Render turns
+  if (turns.length === 0) {
+    body.innerHTML = '<div class="empty">해당 범위에 대화 없음.</div>';
+    renderKeywordsAndSummary(null, []);
+    return;
+  }
+  body.innerHTML = renderTurnsBlock(turns);
+  if (hasMore) {
+    const more = document.createElement('div');
+    more.className = 'load-more';
+    const remaining = Math.max(0, totalTurns - turns.length);
+    more.textContent = `+ 더 보기 (${remaining.toLocaleString()}건 남음)`;
+    more.onclick = async () => {
+      state.turnsLimit = Math.min(5000, state.turnsLimit + 1000);
+      await refreshBody(true);
+    };
+    body.appendChild(more);
+  }
+
+  renderKeywordsAndSummary(turns, await fetchSummaries());
+
+  // P9.4 — search jump + highlight (검색 결과 클릭 후 첫 refreshBody에서만 동작)
+  if (state.searchJumpTerm) {
+    const term = state.searchJumpTerm;
+    const epId = state.searchJumpEpisodeId;
+    state.searchJumpTerm = null;
+    state.searchJumpEpisodeId = null;
+    requestAnimationFrame(() => {
+      const re = new RegExp(escapeRegex(term), 'gi');
+      let firstHit = null;
+      for (const row of body.querySelectorAll('.turn-row')) {
+        const bubble = row.querySelector('.bubble');
+        if (!bubble) continue;
+        const html = bubble.innerHTML;
+        const replaced = html.replace(/(>)([^<]+)(<)/g, (_, a, txt, c) =>
+          a + txt.replace(re, m => `<mark>${m}</mark>`) + c
+        );
+        if (replaced !== html) {
+          bubble.innerHTML = replaced;
+          if (!firstHit) firstHit = row;
+        }
+      }
+      const target = firstHit
+        || (epId ? body.querySelector(`.turn-row [data-eid="${epId}"]`) : null)
+        || body.querySelector('.turn-row');
+      if (target) {
+        target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        target.classList.add('search-hit');
+      }
+    });
+  }
+}
+
+function escapeRegex(s) {
+  return String(s || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function renderEmptyWorkspaceGuide(n) {
+  return `
+    <div class="empty-ws-guide">
+      <h2>이 워크스페이스에 일기 ${n}건뿐</h2>
+      <div class="lead">아직 비었어요. AI가 자비스에 자동으로 일기를 누적하려면 트랜스크립트 정리 명령을 한 번 내려주세요.</div>
+      <code class="cmd">"이 세션 자비스에 올려줘" 또는 "오늘 대화 정리해서 자비스에 박아"</code>
+      <div class="lead" style="margin-top:18px;">AI는 트랜스크립트 위치를 찾아 정제하고 풍부한 요약 + 핵심 fact/entity를 같이 박아둡니다. 다른 세션에서도 회상 가능.</div>
+      <div style="margin-top:20px;">
+        <span class="switch-ws" id="ws-switch-to-active">활성 워크스페이스(자비스프로젝트) 미리보기</span>
+      </div>
+    </div>
+  `;
+}
+
+// ── Diary-first view (날짜 단독 선택 시 메인 뷰) ──
+state.dayTurnsCache = {};
+
+async function renderDiariesByDate(d) {
+  const head = $('chat-head');
+  const body = $('chat-body');
+  const dateFrom = `${d}T00:00:00Z`;
+  const dateTo = nextDay(d) + 'T00:00:00Z';
+
+  body.innerHTML = `<div class="empty">일기 불러오는 중…</div>`;
+
+  let diariesR, timelineR;
+  try {
+    [diariesR, timelineR] = await Promise.all([
+      post('/diaries-by-date', { workspace_id: WORKSPACE_ID, date_from: dateFrom, date_to: dateTo, descending: false }),
+      post('/timeline', { workspace_id: WORKSPACE_ID, date_from: dateFrom, date_to: dateTo, descending: false, limit: 2000 }),
+    ]);
+  } catch (e) {
+    body.innerHTML = `<div class="empty">일기 로드 실패: ${escapeHtml(e.message)}</div>`;
+    return;
+  }
+  const items = diariesR.items || [];
+  state.dayTurnsCache[d] = timelineR.turns || [];
+
+  const dayLabel = `${d} ${weekdayKR(d)}`;
+  head.innerHTML = `<div class="chat-title">
+    <span class="ct-main">${escapeHtml(dayLabel)}</span>
+    <span class="tag">${items.length} 일기</span>
+    <span class="ct-hint">일기는 AI가 그 날을 관찰자 시점으로 정리한 노트입니다. 카드 끝 "대화록 펼치기"로 원본 대화 확인 가능.</span>
+  </div>`;
+
+  if (!items.length) {
+    body.innerHTML = `<div class="empty">이 날짜에 episode 없음.</div>`;
+    return;
+  }
+  body.innerHTML = `<div class="diary-list">${items.map(renderDiaryCard).join('')}</div>`;
+  wireDiaryCards(d);
+
+  // Sidebar: 그 날 다룬 주제(좌측 turns 기반) + 사람용 요약(human_summary 우선)
+  const dayTurns = state.dayTurnsCache[d] || [];
+  const summaries = items.map(it => ({
+    date: (it.day_ts || '').slice(0, 10) || d,
+    subject_name: it.title || '일기',
+    turn_count: it.turn_count,
+    summary: it.human_summary || it.summary || '',
+  }));
+  renderKeywordsAndSummary(dayTurns, summaries);
+}
+
+function renderDiaryCard(it) {
+  const time = it.day_ts ? fmtTime(it.day_ts) : '';
+  const epShort = String(it.episode_id || '').slice(0, 8);
+  const entry = it.diary_entry || '';
+  const hasDiary = !!entry.trim();
+  const placeholder = hasDiary
+    ? ''
+    : `<div class="diary-placeholder">⚠ 일기 아직 작성 안 됨 — summary로 대체 표시</div>`;
+  const body = hasDiary ? entry : (it.summary || '(요약 없음)');
+  let html;
+  try {
+    html = (typeof DOMPurify !== 'undefined' && typeof marked !== 'undefined')
+      ? DOMPurify.sanitize(marked.parse(body))
+      : escapeHtml(body).replace(/\n/g, '<br/>');
+  } catch (e) {
+    html = escapeHtml(body).replace(/\n/g, '<br/>');
+  }
+  const title = it.title ? `<div class="diary-title">${escapeHtml(it.title)}</div>` : '';
+  return `
+    <article class="diary-card" data-ep="${it.episode_id}">
+      <header class="diary-head">
+        <span class="diary-time">${escapeHtml(time)}</span>
+        <span class="diary-meta">${it.turn_count} turns · ep ${epShort}</span>
+      </header>
+      ${title}
+      ${placeholder}
+      <div class="diary-body">${html}</div>
+      <footer class="diary-foot">
+        <button class="show-turns-btn" data-ep="${it.episode_id}">💬 대화록 펼치기 (${it.turn_count} turns)</button>
+        <div class="diary-turns-slot" data-slot-ep="${it.episode_id}" hidden></div>
+      </footer>
+    </article>
+  `;
+}
+
+function wireDiaryCards(d) {
+  for (const btn of document.querySelectorAll('.show-turns-btn')) {
+    btn.onclick = () => {
+      const ep = btn.getAttribute('data-ep');
+      const slot = document.querySelector(`.diary-turns-slot[data-slot-ep="${ep}"]`);
+      if (!slot) return;
+      if (!slot.hidden) {
+        slot.hidden = true;
+        btn.textContent = btn.textContent.replace('접기', '대화록 펼치기');
+        return;
+      }
+      if (!slot.dataset.loaded) {
+        const turns = (state.dayTurnsCache[d] || []).filter(t => t.episode_id === ep);
+        slot.innerHTML = turns.length
+          ? renderTurnsBlock(turns)
+          : `<div class="empty-mini">이 episode의 turn이 캐시에 없음.</div>`;
+        slot.dataset.loaded = '1';
+      }
+      slot.hidden = false;
+      btn.textContent = btn.textContent.replace('대화록 펼치기', '접기');
+    };
+  }
+}
+
+function renderTurnsBlock(turns) {
+  // Count episodes — if too many (>20 unique in shown turns), suppress dividers
+  // because subject-feed results often interleave many small episodes.
+  const uniqueEps = new Set(turns.map(t => t.episode_id));
+  const showDividers = uniqueEps.size <= 20;
+  let html = '';
+  let prevEp = null;
+  let prevRole = null;
+  for (const t of turns) {
+    let dividerShown = false;
+    if (showDividers && t.episode_id !== prevEp) {
+      const epShort = String(t.episode_id || '').slice(0, 8);
+      const dateOnly = (t.timestamp || '').slice(0, 10);
+      const timeOnly = fmtTime(t.timestamp);
+      html += `<div class="episode-divider">`
+            + `<span class="ep-date">${escapeHtml(dateOnly)}</span>`
+            + `<span class="ep-meta">${escapeHtml(timeOnly)}</span>`
+            + `<span class="ep-tag">ep ${escapeHtml(epShort)}</span>`
+            + `</div>`;
+      prevEp = t.episode_id;
+      dividerShown = true;
+      prevRole = null;  // reset speaker chain after divider
+    }
+    const sameSpeaker = (!dividerShown && prevRole === t.role);
+    html += renderTurn(t, sameSpeaker);
+    prevRole = t.role;
+  }
+  return html;
+}
+
+// Activate GFM + single-newline → <br> so flat turn.text bodies render with breaks.
+if (typeof marked !== 'undefined' && marked.setOptions) {
+  marked.setOptions({ breaks: true, gfm: true });
+}
+
+function safeMarkdown(text) {
+  return DOMPurify.sanitize(marked.parse(text || ''), { ADD_ATTR: ['target'] });
+}
+
+// Tool-call line patterns from older ingest (Read/Bash/[결과] etc.).
+// In cleaned view: strip them. In raw view: keep as-is.
+// `/i` 대소문자 무시 (tool_result / TOOL_RESULT 둘 다). 한국어 [결과] 는 \b 가
+// 안 먹어서 별도 RESULT_LINE_RE 로 처리.
+const TOOL_LINE_RE = /^\s*\[(Read|Write|Edit|Bash|Grep|Glob|TOOL_USE|TOOL_RESULT|tool_result|tool_use|TodoWrite|WebFetch|WebSearch|Agent|NotebookEdit|MultiEdit|LS)\b/i;
+// "[결과]" 단독 줄 또는 "[결과] ..." 머리 — \b 가 한글에 안 먹어서 분리.
+const RESULT_LINE_RE = /^\s*\[결과\]?(?:\s|$)/;
+// cat -n / file read 줄번호 prefix: "   123→content" 형태 — older ingest noise.
+const LINE_NUM_RE = /^\s*\d+→/;
+function cleanTurnText(text) {
+  if (!state.cleanedView || !text) return text || '';
+  return text.split('\n').filter(line =>
+    !TOOL_LINE_RE.test(line) &&
+    !RESULT_LINE_RE.test(line) &&
+    !LINE_NUM_RE.test(line)
+  ).join('\n').trim();
+}
+
+// Flat turn.text (한 줄에 여러 문단) 를 시각적으로 끊기 위해 휴리스틱하게 \n\n 주입.
+// 안전책: 이미 줄바꿈 충분하면 거의 no-op.
+function injectParagraphBreaks(text) {
+  if (!text) return text;
+  let s = text;
+  // (a) 시간 패턴 (HH:MM) 앞에 \n\n, 뒤에 \n  — 일기/회상 본문에서 시각 표기 분리
+  s = s.replace(/(?<=[\.\?\!\s])(\d{1,2}:\d{2})(?=\s)/g, '\n\n$1\n');
+  // (b) Phase 패턴 (Phase 1, Phase 2.1 …) 앞에 \n\n
+  s = s.replace(/(?<![\n])\bPhase\s+\d+(?:\.\d+)?(?=[:\s])/g, '\n\n$&');
+  // (c) (1) (2) (3) … 인라인 번호 매기기 앞에 \n
+  s = s.replace(/(?<=\S\s)(\(\d+\))/g, '\n$1');
+  return s.trim();
+}
+
+function renderTurn(t, sameSpeaker) {
+  const role = t.role || 'assistant';
+  const time = fmtTime(t.timestamp);
+  // 서버 정제분(turn.cleaned_text)이 있으면 우선 사용. 토글 OFF 또는 cleaned_text 없으면 raw.
+  const hasServerClean = (t.cleaned_text != null && t.cleaned_text !== '');
+  const source = (state.cleanedView && hasServerClean) ? t.cleaned_text : t.text;
+  // 서버 정제분이 이미 들어왔으면 클라이언트 정규식 strip 은 skip (이중 정제 방지).
+  const cleaned = (state.cleanedView && hasServerClean)
+    ? (source || '').trim()
+    : cleanTurnText(source);
+  if (!cleaned) return '';  // turn was 100% tool noise → skip
+  const broken = injectParagraphBreaks(cleaned);
+  const rendered = safeMarkdown(broken);
+  const sameClass = sameSpeaker ? ' same-speaker' : '';
+  if (role === 'user') {
+    return `<div class="turn-row user${sameClass}"><div class="bubble user">${rendered}</div><span class="ts">${time}</span></div>`;
+  }
+  if (role === 'assistant') {
+    return `<div class="turn-row assistant${sameClass}"><div class="bubble assistant">${rendered}</div><span class="ts">${time}</span></div>`;
+  }
+  // tool / system — collapsible
+  const firstLine = (cleaned.split('\n', 1)[0] || role).slice(0, 80);
+  return `<div class="turn-row ${role}${sameClass}">`
+       + `<div class="bubble ${role}">`
+       + `<span class="tool-head" data-toggle="tool">${escapeHtml(role)} · ${escapeHtml(firstLine)}</span>`
+       + `<div class="tool-body">${rendered}</div>`
+       + `</div></div>`;
+}
+
+// ── Keywords + summaries panel ──
+async function fetchSummaries() {
   const req = { workspace_id: WORKSPACE_ID };
   if (state.selectedDate) {
     req.date_from = state.selectedDate;
     req.date_to = nextDay(state.selectedDate);
   }
-  if (state.selectedSubjectId) req.subject_id = state.selectedSubjectId;
-  const res = await post('/summaries', req);
-  if (res.summaries.length === 0) {
-    panel.innerHTML = '<div class="empty" style="padding: 20px 0;">선택된 범위 요약 없음</div>';
+  if (state.selectedSubId || state.selectedTopicId) {
+    req.subject_id = state.selectedSubId || state.selectedTopicId;
+  }
+  try {
+    const r = await post('/summaries', req);
+    return r.summaries;
+  } catch (e) {
+    return [];
+  }
+}
+
+function renderKeywordsAndSummary(turns, summaries) {
+  const kwBox = $('keywords');
+  const kwCount = $('keywords-count');
+  const summBox = $('summaries');
+  const summCount = $('summaries-count');
+
+  // "다룬 주제" 패널: 본문/범위에서 다룬 sub-subject 이름들. top-level 제외.
+  // Fallback when no turns shown (onboarding / empty filter): workspace-wide top sub-subjects.
+  let keywords = [];
+  let keywordsMode = 'turns';  // 'turns' (현재 본문 기준) | 'workspace' (전체)
+  // 실제 데이터 구조: 그 날 다룬 "의미 주제"(타세션 맥락 회상, 다크 시안 UI 등)는
+  // top-level(parent_id=null)에 있고, sub-subject는 오히려 episode 자동제목
+  // ("JARVIS > 프로젝트 완성 작업 (2026-05-28~29)")이다. 그래서 parent_id 유무로
+  // 거르지 않고, (1)episode_topic/자동제목 (2)워크스페이스명급 큰 주제만 제외한다.
+  const WS_TOPIC_NAMES = new Set(['JARVIS', '자비스', 'Argos', '아르고스', '자비스프로젝트', '펀드메신저']);
+  const looksLikeAutoTopic = (name) =>
+    !name || / > /.test(name) || /\(\d{4}-\d{2}-\d{2}[^)]*\)\s*$/.test(name);
+  const isIndexable = (meta) =>
+    meta && meta.name
+    && meta.entity_type !== 'episode_topic'
+    && !looksLikeAutoTopic(meta.name)
+    && !WS_TOPIC_NAMES.has(meta.name.trim());
+  // prefix 정리 — 현재 워크스페이스가 그 주제이므로 "JARVIS > ", "Argos > " 등 머리 제거.
+  const cleanTopicName = (name) => {
+    let s = String(name || '');
+    s = s.replace(/^\s*(JARVIS|Argos|자비스|아르고스)\s*>\s*/i, '');
+    s = s.replace(/\s*\(\d{4}-\d{2}-\d{2}[^)]*\)\s*$/, '');  // 끝 날짜 괄호 제거
+    return s.trim() || String(name || '');
+  };
+  if (turns && turns.length > 0) {
+    const freq = {};
+    for (const t of turns) {
+      for (const sid of (t.subjects || [])) {
+        const meta = state.subjectsMap[sid];
+        if (!isIndexable(meta)) continue;
+        freq[sid] = (freq[sid] || 0) + 1;
+      }
+    }
+    keywords = Object.entries(freq)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 24)
+      .map(([sid, n]) => ({ subject_id: sid, name: cleanTopicName(state.subjectsMap[sid].name), count: n }));
+  }
+  if (keywords.length === 0) {
+    // Fallback: workspace-wide sub-subjects by turn_count
+    keywordsMode = 'workspace';
+    keywords = Object.entries(state.subjectsMap || {})
+      .filter(([_, m]) => isIndexable(m))
+      .map(([sid, m]) => ({ subject_id: sid, name: cleanTopicName(m.name), count: m.turn_count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 24);
+  }
+  if (keywords.length === 0) {
+    kwBox.innerHTML = '<div class="empty-mini">하위 주제 없음</div>';
+    kwCount.textContent = '';
+  } else {
+    const VISIBLE_KW_LIMIT = 18;
+    // hot 임계 — 상위 5개 임의값 대신 "최대빈도의 50%"라는 상대값
+    const HOT_THRESHOLD = Math.max(3, (keywords[0]?.count || 0) * 0.5);
+    const overflow = Math.max(0, keywords.length - VISIBLE_KW_LIMIT);
+    const chipsHtml = keywords.map((k, i) => {
+      const label = k.name.length > 38 ? k.name.slice(0, 36) + '…' : k.name;
+      const hidden = i >= VISIBLE_KW_LIMIT ? ' is-hidden' : '';
+      const overflowAttr = i >= VISIBLE_KW_LIMIT ? ' data-overflow="1"' : '';
+      const hot = k.count >= HOT_THRESHOLD ? ' hot' : '';
+      return `<span class="tag-chip${hot}${hidden}"${overflowAttr}`
+           + ` data-sid="${k.subject_id}"`
+           + ` title="${escapeHtml(k.name)} (${k.count}회) — 클릭으로 위키 페이지">`
+           + `<span class="kw-name">#${escapeHtml(label)}</span>`
+           + `<span class="kw-count">${k.count}</span>`
+           + `</span>`;
+    }).join('');
+    const moreHtml = overflow > 0
+      ? `<button type="button" class="keywords-more" id="kw-more" data-expanded="0">+ ${overflow}개 더보기</button>`
+      : '';
+    kwBox.innerHTML = chipsHtml + moreHtml;
+    for (const el of kwBox.querySelectorAll('.tag-chip[data-sid]')) {
+      el.style.cursor = 'pointer';
+      el.onclick = () => openEntityPage(el.getAttribute('data-sid'));
+    }
+    const moreBtn = $('kw-more');
+    if (moreBtn) {
+      moreBtn.onclick = (e) => {
+        e.stopPropagation();
+        const expanded = moreBtn.dataset.expanded === '1';
+        for (const el of kwBox.querySelectorAll('.tag-chip[data-overflow="1"]')) {
+          if (expanded) el.classList.add('is-hidden');
+          else          el.classList.remove('is-hidden');
+        }
+        moreBtn.dataset.expanded = expanded ? '0' : '1';
+        moreBtn.textContent = expanded ? `+ ${overflow}개 더보기` : '접기';
+      };
+    }
+    kwCount.textContent = keywordsMode === 'workspace'
+      ? `${keywords.length} · 전체`
+      : `${keywords.length} · 이 범위`;
+  }
+
+  if (!summaries || summaries.length === 0) {
+    const msg = (turns && turns.length > 0)
+      ? '이 범위의 요약은 아직 자비스가 만들지 않았어요 — 다른 세션에서 \'이 날 자비스에 정리해\' 호출 시 생성'
+      : '날짜·주제 선택하거나 자비스에서 정리 명령하면 표시';
+    summBox.innerHTML = `<div class="empty-mini">${msg}</div>`;
+    summCount.textContent = '';
+  } else {
+    summBox.innerHTML = summaries.map(s => `
+      <div class="summary-card">
+        <div class="meta">${s.date} · ${escapeHtml(s.subject_name)} · ${s.turn_count} turns</div>
+        <div class="content">${safeMarkdown(s.summary)}</div>
+      </div>
+    `).join('');
+    summCount.textContent = summaries.length;
+  }
+}
+
+// ── Search ──
+async function runSearch(query) {
+  if (!query || query.trim().length === 0) return;
+  state.searchActive = true;
+  state.searchQuery = query;
+  state.searchFacets = { yearMonth: null, subjectId: null, matchedField: null };
+  const center = $('center');
+  center.innerHTML = `<div class="search-results"><h2>검색: "${escapeHtml(query)}"</h2><div id="search-loading">검색 중…</div></div>`;
+  try {
+    const r = await post('/search-episodes', { workspace_id: WORKSPACE_ID, query, limit: 30 });
+    state.searchResultsRaw = r.results;
+  } catch (e) {
+    center.querySelector('.search-results').innerHTML += `<div class="empty">검색 실패: ${e.message}</div>`;
     return;
   }
-  panel.innerHTML = res.summaries.map(s => `
-    <div class="summary-card">
-      <div class="meta">${s.date} · ${s.subject_name} · ${s.turn_count} turns</div>
-      <div>${marked.parse(s.summary)}</div>
+  renderSearchResults();
+}
+
+function filteredSearchResults() {
+  const f = state.searchFacets;
+  return state.searchResultsRaw.filter(r => {
+    if (f.yearMonth && dateKey(r.created_at).slice(0,7) !== f.yearMonth) return false;
+    if (f.matchedField && r.matched_field !== f.matchedField) return false;
+    if (f.subjectId) {
+      const subs = r.subjects || r.subject_ids || [];
+      if (!subs.includes(f.subjectId)) return false;
+    }
+    return true;
+  });
+}
+
+function renderSearchResults() {
+  const center = $('center');
+  const query = state.searchQuery;
+  const raw = state.searchResultsRaw;
+  const filtered = filteredSearchResults();
+  const maxScore = raw.length ? Math.max(...raw.map(r => r.score)) : 1;
+  const matchFieldKR = { content: '본문 매치', summary: '요약 매치' };
+
+  // Facet aggregations (over raw — so counts are stable regardless of selection)
+  const ymCounts = {};
+  const fieldCounts = {};
+  const subjectCounts = {};
+  for (const r of raw) {
+    const ym = dateKey(r.created_at).slice(0,7);
+    ymCounts[ym] = (ymCounts[ym] || 0) + 1;
+    fieldCounts[r.matched_field] = (fieldCounts[r.matched_field] || 0) + 1;
+    for (const sid of (r.subjects || r.subject_ids || [])) {
+      const meta = state.subjectsMap[sid];
+      if (!meta || meta.parent_id) continue;  // top-level only
+      subjectCounts[sid] = (subjectCounts[sid] || 0) + 1;
+    }
+  }
+  const ymList = Object.entries(ymCounts).sort((a,b) => b[0].localeCompare(a[0]));
+  const fieldList = Object.entries(fieldCounts);
+  const subjList = Object.entries(subjectCounts).sort((a,b) => b[1] - a[1]);
+
+  const facetHtml = `
+    <div class="search-facets">
+      <div>
+        <h4>날짜</h4>
+        ${ymList.map(([ym,n]) => `<div class="facet-item${state.searchFacets.yearMonth===ym?' active':''}" data-facet="ym" data-val="${ym}"><span>${ym}</span><span class="facet-count">${n}</span></div>`).join('')}
+      </div>
+      ${subjList.length ? `<div>
+        <h4>주제</h4>
+        ${subjList.map(([sid,n]) => `<div class="facet-item${state.searchFacets.subjectId===sid?' active':''}" data-facet="sid" data-val="${sid}"><span>${escapeHtml(state.subjectsMap[sid].name)}</span><span class="facet-count">${n}</span></div>`).join('')}
+      </div>` : ''}
+      <div>
+        <h4>매치 위치</h4>
+        ${fieldList.map(([f,n]) => `<div class="facet-item${state.searchFacets.matchedField===f?' active':''}" data-facet="field" data-val="${f}"><span>${matchFieldKR[f] || f}</span><span class="facet-count">${n}</span></div>`).join('')}
+      </div>
+      <span class="facet-clear" id="facet-clear">초기화</span>
     </div>
-  `).join('');
+  `;
+
+  const html = filtered.length === 0
+    ? '<div class="empty">결과 없음</div>'
+    : filtered.map(r => {
+        const pct = Math.round((r.score / maxScore) * 100);
+        const grade = pct >= 75 ? 'High' : pct >= 35 ? 'Mid' : 'Low';
+        const field = matchFieldKR[r.matched_field] || r.matched_field;
+        return `
+        <div class="search-result" data-eid="${r.episode_id}" data-date="${dateKey(r.created_at)}">
+          <h4>${escapeHtml(r.summary || '(요약 없음)')}</h4>
+          <div class="meta">${dateKey(r.created_at)} · 관련도 ${pct}% (${grade}) · ${field}</div>
+          <div class="snippet">${safeMarkdown(r.snippet)}</div>
+        </div>`;
+      }).join('');
+
+  center.innerHTML = `
+    <div class="chat-head"><h1>검색 결과 <span class="tag">${filtered.length}/${raw.length}건</span></h1><div class="meta">"${escapeHtml(query)}"</div></div>
+    <div class="search-layout">
+      ${facetHtml}
+      <div class="search-results">${html}</div>
+    </div>`;
+
+  for (const el of center.querySelectorAll('.facet-item')) {
+    el.onclick = () => {
+      const k = el.getAttribute('data-facet');
+      const v = el.getAttribute('data-val');
+      const f = state.searchFacets;
+      if (k === 'ym') f.yearMonth = (f.yearMonth === v ? null : v);
+      else if (k === 'sid') f.subjectId = (f.subjectId === v ? null : v);
+      else if (k === 'field') f.matchedField = (f.matchedField === v ? null : v);
+      renderSearchResults();
+    };
+  }
+  const clearBtn = center.querySelector('#facet-clear');
+  if (clearBtn) clearBtn.onclick = () => {
+    state.searchFacets = { yearMonth: null, subjectId: null, matchedField: null };
+    renderSearchResults();
+  };
+  for (const el of center.querySelectorAll('.search-result')) {
+    el.onclick = () => {
+      const d = el.getAttribute('data-date');
+      const eid = el.getAttribute('data-eid');
+      state.searchJumpTerm = query;
+      state.searchJumpEpisodeId = eid;
+      restoreLayout();
+      selectDate(d);
+    };
+  }
 }
 
-// Wire controls
-function setZoom(z) {
-  state.zoom = z;
-  for (const b of document.querySelectorAll('.zoom-btn')) b.classList.remove('active');
-  document.getElementById('zoom-' + z).classList.add('active');
-  renderDateTree();
+function restoreLayout() {
+  const wsName = escapeHtml(WORKSPACE_NAME || '');
+  $('center').innerHTML = `
+    <div class="chat-head" id="chat-head"><h1><span class="diary-ws-name">${wsName}</span> 일기<span class="diary-mode-badge">현재 ws</span></h1><div class="meta">상단 주제 또는 좌측 날짜를 선택하세요</div></div>
+    <div class="chat-body" id="chat-body"></div>
+  `;
+  state.searchActive = false;
 }
-document.getElementById('zoom-month').onclick = () => setZoom('month');
-document.getElementById('zoom-week').onclick = () => setZoom('week');
-document.getElementById('zoom-day').onclick = () => setZoom('day');
-document.getElementById('order-btn').onclick = (e) => {
-  state.descending = !state.descending;
-  e.target.textContent = state.descending ? '↓' : '↑';
-  loadDateBuckets();
+
+// ── Wire controls ──
+// Tool-call bubble fold (event delegation — chat-body은 init 후 innerHTML로
+// 매번 교체되지만, document 레벨 위임이라 재바인딩 불필요)
+document.addEventListener('click', (e) => {
+  const head = e.target.closest('[data-toggle="tool"]');
+  if (!head) return;
+  const bubble = head.parentElement;
+  if (bubble) bubble.classList.toggle('expanded');
+});
+
+// Workspace dropdown
+$('ws-label').onclick = (e) => {
+  e.stopPropagation();
+  const menu = $('ws-menu');
+  if (menu.classList.contains('open')) { menu.classList.remove('open'); return; }
+  renderWsMenu();
+  menu.classList.add('open');
 };
-document.getElementById('refresh-btn').onclick = init;
+document.addEventListener('click', (e) => {
+  const menu = $('ws-menu');
+  // ws-label wrap 도입 후 e.target이 ws-name 등 내부 span일 수 있으니
+  // closest 로 ws-label 자손인지 확인
+  if (menu.classList.contains('open') && !menu.contains(e.target) && !e.target.closest('#ws-label')) {
+    menu.classList.remove('open');
+  }
+});
 
-async function init() {
-  await pickWorkspace();
-  await loadSubjects();
-  await loadDateBuckets();
+$('zoom-month').onclick = () => { state.zoom = 'month'; $('zoom-month').classList.add('active'); $('zoom-day').classList.remove('active'); renderDateTree(); };
+$('zoom-day').onclick = () => { state.zoom = 'day'; $('zoom-day').classList.add('active'); $('zoom-month').classList.remove('active'); renderDateTree(); };
+$('order-btn').onclick = (e) => { state.descending = !state.descending; e.target.textContent = state.descending ? '↓' : '↑'; renderDateTree(); };
+{
+  const tgl = $('cleaned-toggle');
+  const apply = () => {
+    tgl.classList.toggle('active', state.cleanedView);
+    // 양의어("정제/원본") 제거 — active=정제됨, 비active=정제 끄기로 상태 명시
+    tgl.innerHTML = state.cleanedView
+      ? '<span style="color:#e9eefb;">정제됨</span>'
+      : '<span style="color:var(--text-3);">정제 끄기</span>';
+    if (state.searchActive) return;
+    refreshBody();
+  };
+  apply();
+  tgl.onclick = () => { state.cleanedView = !state.cleanedView; apply(); };
 }
-init().catch(e => console.error('init failed:', e));
+$('search-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') runSearch(e.target.value);
+  if (e.key === 'Escape') { e.target.value = ''; if (state.searchActive) { restoreLayout(); refreshBody(); } }
+});
+// P7 — wiki tab → open the entity-index modal (workspace-wide).
+$('wiki-tab').addEventListener('click', () => openWikiIndex());
+$('wiki-tab').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openWikiIndex(); }
+});
+window.addEventListener('keydown', (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key === 'k') { e.preventDefault(); $('search-input').focus(); }
+  if (e.key === 'Escape' && $('entity-modal').classList.contains('open')) closeEntityModal();
+});
+$('entity-modal').onclick = (e) => { if (e.target.id === 'entity-modal') closeEntityModal(); };
+
+function escapeHtml(s) {
+  return String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// ws-label 헤더 — "ws ·" 약화 + name 강조 위계
+function setWsLabel(name) {
+  const el = $('ws-label');
+  if (!el) return;
+  el.innerHTML = `<span style="color:var(--text-3);">ws ·</span> <span class="ws-name">${escapeHtml(name || '')}</span>`;
+}
+
+// 본문 chat-head — 'JARVIS 일기' 고정 텍스트를 동적 ws 라벨 + 모드 배지로 통일
+// modeBadge 기본값 '현재 ws' — 본문은 항상 현재 ws 의 일기를 보여주므로
+function renderChatHeadHome(metaText, modeBadge = '현재 ws') {
+  const wsName = escapeHtml(WORKSPACE_NAME || '');
+  const badge = modeBadge ? `<span class="diary-mode-badge">${escapeHtml(modeBadge)}</span>` : '';
+  return `<h1><span class="diary-ws-name">${wsName}</span> 일기${badge}</h1>` +
+         `<div class="meta">${escapeHtml(metaText || '')}</div>`;
+}
+
+// ── Entity (wiki) modal ──
+async function openEntityPage(entityId, push = true) {
+  const modal = $('entity-modal');
+  modal.classList.add('open');
+  modal.innerHTML = `<div class="entity-modal"><header><div class="ent-meta">로드 중…</div></header></div>`;
+  let payload;
+  try {
+    payload = await post('/entity-page', { workspace_id: WORKSPACE_ID, entity_id: entityId });
+  } catch (e) {
+    modal.innerHTML = `<div class="entity-modal"><header><h2>로드 실패</h2><div class="ent-meta">${escapeHtml(e.message)}</div></header></div>`;
+    return;
+  }
+  if (push) state.entityStack.push(entityId);
+  renderEntityModal(payload);
+}
+function closeEntityModal() {
+  $('entity-modal').classList.remove('open');
+  state.entityStack = [];
+}
+function renderEntityModal(p) {
+  const parentLink = p.parent
+    ? `<a data-eid="${p.parent.entity_id}" class="ent-link">${escapeHtml(p.parent.name)}</a> / `
+    : '';
+  const childChips = p.children.slice(0, 24).map(c =>
+    `<span class="wiki-chip ent-link" data-eid="${c.entity_id}">${escapeHtml(c.name)}</span>`
+  ).join('');
+  const aliasLine = p.aliases.length
+    ? `<div class="ent-meta">aliases: ${p.aliases.map(escapeHtml).join(', ')}</div>` : '';
+  const relChips = p.relations.map(r =>
+    `<span class="wiki-chip dir-${r.direction} ent-link" data-eid="${r.other_entity_id}" title="${escapeHtml(r.relation_type)} · weight ${r.weight.toFixed(2)}"><span class="rt">${escapeHtml(r.relation_type)}</span>${escapeHtml(r.other_entity_name)}</span>`
+  ).join('');
+  const factRows = p.facts.map(f => {
+    const supCls = f.superseded_at ? ' superseded' : '';
+    const date = (f.valid_from || '').slice(0, 10);
+    const quote = f.source_quote ? `<span class="quote">“${escapeHtml(f.source_quote)}”</span>` : '';
+    const epLink = f.source_episode_id
+      ? `<span title="ep ${String(f.source_episode_id).slice(0,8)}">${date}</span>` : date;
+    return `<div class="fact-row${supCls}">
+      <div class="pred">${escapeHtml(f.predicate)}</div>
+      <div class="obj">${escapeHtml(f.object_value)}${quote}</div>
+      <div class="meta">${epLink}</div>
+    </div>`;
+  }).join('');
+  const epRows = p.recent_episodes.map(e => `
+    <div class="ep-row" data-date="${e.date}">
+      <div class="ep-date">${e.date}</div>
+      <div class="ep-sum">${safeMarkdown(e.summary || '')}</div>
+      <div class="ep-ct">${e.turn_count} turns</div>
+    </div>`).join('');
+  const backBtn = state.entityStack.length > 1
+    ? `<a class="ent-back" data-back="1">← 뒤로</a> · ` : '';
+  // F4: subject_id 가 subjectsMap 에 있으면 "본문 필터링" 버튼 노출 (sub-subject 류).
+  // top-level 주제는 parent_id null 이라 제외 — 본문 필터는 sub-subject 단위.
+  const subjectMeta = state.subjectsMap[p.entity_id];
+  const showFilterBtn = subjectMeta && subjectMeta.parent_id;
+  const filterBtn = showFilterBtn
+    ? `<button type="button" class="ent-filter-btn" id="ent-filter-btn" title="이 주제로 본문 필터링">이 주제로 본문 보기</button>`
+    : '';
+  // AI 가 써둔 wiki_article 이 있으면 상단에 우선 표시 (사람이 보는 줄글 설명).
+  // 없으면 기존 사실/관계/episode 섹션이 그대로 fallback 으로 보인다.
+  const wikiSec = (p.wiki_article && p.wiki_article.trim())
+    ? `<div class="sec wiki-article"><h3>위키</h3><div class="wiki-body">${safeMarkdown(p.wiki_article)}</div></div>`
+    : '';
+  $('entity-modal').innerHTML = `
+    <div class="entity-modal">
+      <button class="close-x" id="ent-close">×</button>
+      <header>
+        <div class="crumb">${backBtn}${parentLink}${escapeHtml(p.entity_type)}</div>
+        <h2>${escapeHtml(p.name)}</h2>
+        ${aliasLine}
+        ${filterBtn}
+      </header>
+      <div class="ent-body">
+        ${wikiSec}
+        ${childChips ? `<div class="sec"><h3>하위 (${p.children.length})</h3><div class="chips">${childChips}</div></div>` : ''}
+        ${relChips ? `<div class="sec"><h3>관계 (${p.relations.length})</h3><div class="chips">${relChips}</div></div>` : ''}
+        ${factRows ? `<div class="sec"><h3>사실 (${p.facts.length})</h3>${factRows}</div>` : ''}
+        ${epRows ? `<div class="sec"><h3>최근 episode (${p.recent_episodes.length})</h3>${epRows}</div>` : ''}
+      </div>
+    </div>
+  `;
+  $('ent-close').onclick = closeEntityModal;
+  const fBtn = $('ent-filter-btn');
+  if (fBtn) fBtn.onclick = () => {
+    closeEntityModal();
+    // 현재 검색결과 보고 있으면 본문 layout 으로 복귀.
+    if (state.searchActive) restoreLayout();
+    selectSub(p.entity_id);
+  };
+  for (const el of $('entity-modal').querySelectorAll('.ent-link')) {
+    el.onclick = (e) => { e.stopPropagation(); openEntityPage(el.getAttribute('data-eid')); };
+  }
+  const back = $('entity-modal').querySelector('[data-back]');
+  if (back) back.onclick = () => {
+    state.entityStack.pop();  // current
+    const prev = state.entityStack.pop();  // jump
+    if (prev) openEntityPage(prev);
+    else closeEntityModal();
+  };
+  for (const el of $('entity-modal').querySelectorAll('.ep-row')) {
+    el.onclick = () => {
+      const d = el.getAttribute('data-date');
+      closeEntityModal();
+      restoreLayout();
+      selectDate(d);
+    };
+  }
+}
+
+// ── Init ──
+async function init() {
+  try {
+    await pickWorkspace();
+    // loadSubTree populates state.subjectsMap which keywords sidebar depends on
+    // loadDashboard powers the home page + header stats pill
+    // loadLedger populates Ingest 장부 widget (P4)
+    // loadBrief drives the Today's Brief card (top of home grid)
+    await Promise.all([loadTopics(), loadDateTree(), loadSubTree(), loadDashboard(), loadLedger(), loadOnThisDay(), loadBrief()]);
+    // Show home dashboard by default until user picks something
+    const head = $('chat-head');
+    const stats = state.dashboard?.stats;
+    const range = (stats?.first_date && stats?.last_date) ? `${stats.first_date} ~ ${stats.last_date}` : '데이터 누적 중';
+    head.innerHTML = renderChatHeadHome(`홈 · ${range}`);
+    $('chat-body').innerHTML = renderHomeDashboard();
+    wireHomeDashboard();
+    // Populate sidebar from workspace-wide aggregates
+    const summaries = await fetchSummaries();
+    renderKeywordsAndSummary([], summaries);
+  } catch (e) {
+    $('chat-body').innerHTML = `<div class="empty">초기화 실패: ${e.message}</div>`;
+    console.error(e);
+  }
+}
+init();
 </script>
 </body>
 </html>

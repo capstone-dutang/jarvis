@@ -13,15 +13,21 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from jarvis.config import settings
+from jarvis.core.raw_search import (
+    search_episode_content,
+    search_fragment_content,
+)
 from jarvis.models.tables import (
     Entity,
-    Episode,
     KnowledgeFact,
     TrustLevel,
 )
 from jarvis.schemas import (
+    DailySummaryHit,
     EvidenceResponse,
     FactHistoryEntry,
+    RawEpisodeHit,
+    RawFragmentHit,
     RecallFactResponse,
     RecallMemoryRequest,
     RecallMemoryResponse,
@@ -153,9 +159,14 @@ async def _build_fact_response(
     # Excerpt: prefer fragment.content (natural-language passage) over episode content.
     # Episode content is 100KB+ of raw transcript; fragment is the curated passage
     # linked to this fact. Fall back to episode if no fragment linked.
+    # ``cleaned_excerpt`` mirrors ``excerpt`` but pulls cleaned_content when
+    # R1's cleaning pipeline has populated it. to_jsonb()->>'cleaned_content'
+    # returns NULL when the column does not yet exist, so this is forward-safe.
+    cleaned_excerpt: str | None = None
     frag_result = await db.execute(
         text("""
-            SELECT content FROM fragments
+            SELECT content, to_jsonb(f) ->> 'cleaned_content' AS cleaned_content
+            FROM fragments f
             WHERE source_fact_id = :fid
             ORDER BY created_at DESC
             LIMIT 1
@@ -165,10 +176,29 @@ async def _build_fact_response(
     frag_row = frag_result.fetchone()
     if frag_row:
         excerpt = frag_row[0][:1000] if len(frag_row[0]) > 1000 else frag_row[0]
+        if frag_row[1]:
+            cleaned_excerpt = frag_row[1][:1000] if len(frag_row[1]) > 1000 else frag_row[1]
     elif primary_episode_id:
-        episode_result = await db.execute(select(Episode).where(Episode.id == primary_episode_id))
-        episode = episode_result.scalar_one()
-        excerpt = episode.content[:500] if len(episode.content) > 500 else episode.content
+        # soft-delete filter (4-04): skip excerpt if linked episode is deleted.
+        # Raw text query so we can also pick cleaned_content via to_jsonb without
+        # touching the ORM column list.
+        ep_row = await db.execute(
+            text("""
+                SELECT content, to_jsonb(ep) ->> 'cleaned_content' AS cleaned_content
+                FROM episodes ep
+                WHERE id = :eid
+                  AND (metadata->>'deleted' IS DISTINCT FROM 'true')
+            """),
+            {"eid": str(primary_episode_id)},
+        )
+        row = ep_row.fetchone()
+        if row is None:
+            excerpt = ""
+        else:
+            content_val = row[0] or ""
+            excerpt = content_val[:500] if len(content_val) > 500 else content_val
+            if row[1]:
+                cleaned_excerpt = row[1][:500] if len(row[1]) > 500 else row[1]
     else:
         excerpt = ""
 
@@ -221,6 +251,7 @@ async def _build_fact_response(
         valid_from=fact.valid_from,
         evidence=EvidenceResponse(
             excerpt=excerpt,
+            cleaned_excerpt=cleaned_excerpt,
             episode_id=primary_episode_id or fact.source_episode_id,
             recorded_at=fact.recorded_at,
             episode_count=episode_count,
@@ -264,6 +295,105 @@ async def extract_query_entities(
 # Stage 1 candidate pool size. Research: LIMIT 100.
 # request.limit is the final cap after MMR selection, not the Stage 1 pool size.
 STAGE1_POOL_SIZE = 100
+
+
+async def _raw_fallback_hits(
+    db: AsyncSession,
+    workspace_id: uuid.UUID,
+    fts_query: str,
+    need_raw: bool,
+    limit: int = 5,
+) -> tuple[list[RawEpisodeHit], list[RawFragmentHit]]:
+    """PGroonga `&@~` over episodes + fragments when hybrid recall is thin.
+
+    Returns (RawEpisodeHit list, RawFragmentHit list). Failures are swallowed
+    with logger.exception — raw fallback is best-effort and must never block
+    the main recall path. Added in plan sequential-munching-dove.md (phase 1,
+    A 결함 해소): the PGroonga indexes on episodes.content / fragments.content
+    were created by alembic but never wired up to recall.
+    """
+    if not need_raw or not fts_query.strip():
+        return [], []
+
+    try:
+        eps = await search_episode_content(db, workspace_id, fts_query, limit=limit)
+        frs = await search_fragment_content(db, workspace_id, fts_query, limit=limit)
+    except Exception:
+        logger.exception("raw FTS fallback failed (workspace=%s)", workspace_id)
+        return [], []
+
+    episode_hits = [
+        RawEpisodeHit(
+            episode_id=m.episode_id,
+            summary=m.summary,
+            snippet=m.snippet,
+            cleaned_snippet=m.cleaned_snippet,
+            score=m.score,
+            created_at=m.created_at,
+            matched_field=m.matched_field,
+        )
+        for m in eps
+    ]
+    fragment_hits = [
+        RawFragmentHit(
+            fragment_id=m.fragment_id,
+            content=m.content,
+            cleaned_content=m.cleaned_content,
+            score=m.score,
+            episode_id=m.episode_id,
+            fact_id=m.fact_id,
+        )
+        for m in frs
+    ]
+    return episode_hits, fragment_hits
+
+
+async def _daily_summary_hits(
+    db: AsyncSession,
+    workspace_id: uuid.UUID,
+    anchor_entity_ids: list[uuid.UUID],
+    limit: int = 5,
+) -> list[DailySummaryHit]:
+    """Fetch recent daily_subject_summaries for anchor entities.
+
+    When the query's anchor entities double as subjects (entities used as
+    turn_subjects.subject_id), surface their most recent daily summaries so
+    the caller gets a temporal overview alongside the fact recall. Best-
+    effort — failures swallowed with logger.exception. Added in plan
+    sequential-munching-dove.md (phase 3, B3 해소).
+    """
+    if not anchor_entity_ids:
+        return []
+    try:
+        rows = await db.execute(
+            text("""
+                SELECT dss.subject_id, e.name, dss.date, dss.summary, dss.turn_count
+                FROM daily_subject_summaries dss
+                JOIN entities e ON e.id = dss.subject_id
+                WHERE dss.workspace_id = :ws
+                  AND dss.subject_id = ANY(CAST(:anchors AS uuid[]))
+                ORDER BY dss.date DESC
+                LIMIT :lim
+            """),
+            {
+                "ws": str(workspace_id),
+                "anchors": [str(a) for a in anchor_entity_ids],
+                "lim": limit,
+            },
+        )
+        return [
+            DailySummaryHit(
+                subject_id=r[0],
+                subject_name=r[1],
+                date=r[2].isoformat() if hasattr(r[2], "isoformat") else str(r[2]),
+                summary=r[3],
+                turn_count=int(r[4]),
+            )
+            for r in rows.fetchall()
+        ]
+    except Exception:
+        logger.exception("daily_summary_hits failed (workspace=%s)", workspace_id)
+        return []
 
 
 async def recall_memory(db: AsyncSession, request: RecallMemoryRequest) -> RecallMemoryResponse:
@@ -372,12 +502,24 @@ async def recall_memory(db: AsyncSession, request: RecallMemoryRequest) -> Recal
                 resp = await _build_fact_response(db, fact, cand.rrf_score)
                 results.append(resp)
 
+        # Raw FTS fallback — fires when anchor matching missed or hybrid was thin.
+        need_raw = (not preprocessed.anchor_entity_ids) or len(results) < 3
+        raw_eps, raw_frs = await _raw_fallback_hits(
+            db, request.workspace_id, preprocessed.fts_query, need_raw=need_raw,
+        )
+        daily_hits = await _daily_summary_hits(
+            db, request.workspace_id, preprocessed.anchor_entity_ids,
+        )
+
         return RecallMemoryResponse(
             results=results,
             coverage=assembly.coverage,
             structural_summary=assembly.structural_summary,
             pagination_token="more_available" if assembly.has_more else None,
             anchor_matched=bool(preprocessed.anchor_entity_ids),
+            raw_episode_hits=raw_eps,
+            raw_fragment_hits=raw_frs,
+            daily_summary_hits=daily_hits,
         )
     except Exception:
         # Rollback aborted transaction before fallback
@@ -392,7 +534,17 @@ async def recall_memory(db: AsyncSession, request: RecallMemoryRequest) -> Recal
                 results.append(resp)
         logger.info("Fallback search: %d results for '%s'", len(results), request.query[:50])
 
+    # Hybrid path errored — raw fallback is best-effort, always tried here.
+    raw_eps, raw_frs = await _raw_fallback_hits(
+        db, request.workspace_id, preprocessed.fts_query, need_raw=True,
+    )
+    daily_hits = await _daily_summary_hits(
+        db, request.workspace_id, preprocessed.anchor_entity_ids,
+    )
     return RecallMemoryResponse(
         results=results,
         anchor_matched=bool(preprocessed.anchor_entity_ids),
+        raw_episode_hits=raw_eps,
+        raw_fragment_hits=raw_frs,
+        daily_summary_hits=daily_hits,
     )

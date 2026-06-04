@@ -33,6 +33,9 @@ class PassageHit:
     entity_name: str | None
     predicate: str | None
     created_at: datetime
+    # NULL until R1's cleaning pipeline lands. SELECT uses to_jsonb so this
+    # works even before the column exists on fragments — graceful degradation.
+    cleaned_content: str | None = None
 
 
 async def search_passages(
@@ -53,6 +56,10 @@ async def search_passages(
     if not vec:
         return []
 
+    # to_jsonb(f)->>'cleaned_content' returns NULL when the column does not
+    # exist yet (R1 hasn't added it) and returns the value once it does — so
+    # this query stays correct across R1's migration without a deploy ordering
+    # constraint.
     result = await db.execute(
         text("""
             SELECT
@@ -63,7 +70,8 @@ async def search_passages(
                 f.source_fact_id,
                 e.name AS entity_name,
                 kf.predicate,
-                f.created_at
+                f.created_at,
+                to_jsonb(f) ->> 'cleaned_content' AS cleaned_content
             FROM embeddings emb
             JOIN fragments f ON f.id = emb.source_id
             LEFT JOIN knowledge_facts kf ON kf.id = f.source_fact_id
@@ -86,6 +94,7 @@ async def search_passages(
             entity_name=row[5],
             predicate=row[6],
             created_at=row[7],
+            cleaned_content=row[8],
         )
         for row in rows
     ]

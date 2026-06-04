@@ -22,16 +22,30 @@ async def create_workspace(
     db.add(ws)
     await db.commit()
     await db.refresh(ws)
-    return WorkspaceResponse(id=ws.id, name=ws.name, created_at=ws.created_at)
+    return WorkspaceResponse(
+        id=ws.id, name=ws.name, created_at=ws.created_at, status=ws.status
+    )
 
 
 @router.get("", response_model=list[WorkspaceResponse])
 async def list_workspaces(
+    include_hidden: bool = False,
     db: AsyncSession = Depends(get_session),
 ) -> list[WorkspaceResponse]:
-    result = await db.execute(select(Workspace).order_by(Workspace.created_at.desc()))
+    """List workspaces. By default only active ones are returned.
+
+    Pass include_hidden=true to also include hidden/archived workspaces
+    (admin / debug view).
+    """
+    stmt = select(Workspace).order_by(Workspace.name.asc())
+    if not include_hidden:
+        stmt = stmt.where(Workspace.status == "active")
+    result = await db.execute(stmt)
     rows = result.scalars().all()
-    return [WorkspaceResponse(id=w.id, name=w.name, created_at=w.created_at) for w in rows]
+    return [
+        WorkspaceResponse(id=w.id, name=w.name, created_at=w.created_at, status=w.status)
+        for w in rows
+    ]
 
 
 @router.get("/{workspace_id}", response_model=WorkspaceResponse)
@@ -43,4 +57,6 @@ async def get_workspace(
     ws = result.scalar_one_or_none()
     if not ws:
         raise HTTPException(status_code=404, detail="Workspace not found")
-    return WorkspaceResponse(id=ws.id, name=ws.name, created_at=ws.created_at)
+    return WorkspaceResponse(
+        id=ws.id, name=ws.name, created_at=ws.created_at, status=ws.status
+    )

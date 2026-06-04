@@ -39,7 +39,19 @@ def run_migrations_offline() -> None:
 
 
 def do_run_migrations(connection) -> None:  # type: ignore[no-untyped-def]
-    context.configure(connection=connection, target_metadata=target_metadata)
+    # P6 (2026-05-29): transaction_per_migration=True is required so that
+    # `ALTER TYPE entitytype ADD VALUE 'episode_topic'` (revision
+    # p6k7l8m9n0o1) is COMMITTED before the data-update migration that
+    # references it (revision q7l8m9n0o1p2). Postgres raises
+    # UnsafeNewEnumValueUsageError if a new enum value is referenced in the
+    # same transaction in which it was added. Per-migration transactions are
+    # also a generally safer default — partial failures don't rollback all
+    # of history.
+    context.configure(
+        connection=connection,
+        target_metadata=target_metadata,
+        transaction_per_migration=True,
+    )
     with context.begin_transaction():
         context.run_migrations()
 

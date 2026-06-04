@@ -84,10 +84,14 @@ async def get_episode_excerpt(
       - "full":     return content[:max_chars]
       - "head":     alias of full (future: may differ if we add summary-first)
     """
+    # soft-delete filter (4-04): hide deleted episodes from excerpt fetch.
+    # `Episode.metadata_["deleted"].astext != "true"` returns NULL for legacy
+    # rows where the key is absent, so use IS DISTINCT FROM via raw SQL OR.
     result = await db.execute(
         select(Episode).where(
             Episode.id == episode_id,
             Episode.workspace_id == workspace_id,
+            Episode.metadata_["deleted"].astext.is_distinct_from("true"),
         )
     )
     episode = result.scalar_one_or_none()

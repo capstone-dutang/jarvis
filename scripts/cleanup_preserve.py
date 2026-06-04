@@ -103,7 +103,8 @@ def parse_and_clean(path: Path) -> tuple[list[dict], dict, str]:
     metadata = {}
     cleaned = []
     seq = 0
-    raw_text = path.read_text(encoding="utf-8")
+    # PG rejects 0x00 in UTF8 text columns. Strip NUL bytes from raw + turns at parse time.
+    raw_text = path.read_text(encoding="utf-8").replace("\x00", "")
 
     with open(path, encoding="utf-8") as fp:
         for line in fp:
@@ -138,7 +139,7 @@ def parse_and_clean(path: Path) -> tuple[list[dict], dict, str]:
             cleaned.append({
                 "sequence": seq,
                 "role": t,
-                "text": txt,
+                "text": txt.replace("\x00", ""),
                 "timestamp": ts,
             })
     return cleaned, metadata, raw_text
@@ -150,6 +151,7 @@ def main():
     p.add_argument("--workspace-id", default=os.environ.get("JARVIS_WORKSPACE_ID", "71a0ddee-a88c-4ca3-978a-ee5c61e5ed63"))
     p.add_argument("--api", default=os.environ.get("JARVIS_API_URL", "http://127.0.0.1:8014/api/v1/memory"))
     p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--save-cleaned", type=Path, help="Write cleaned turns to file (one per ---boundary)")
     args = p.parse_args()
 
     cleaned, metadata, raw = parse_and_clean(args.path)
@@ -158,6 +160,14 @@ def main():
     print(f"  cleaned turns: {len(cleaned)}")
     print(f"  cwd: {metadata.get('cwd')}")
     print(f"  title: {metadata.get('title')}")
+
+    if args.save_cleaned:
+        lines = [f"# cleaned from {args.path.name} ({len(cleaned)} turns)\n# cwd: {metadata.get('cwd')}\n# title: {metadata.get('title')}\n"]
+        for t in cleaned:
+            lines.append(f"\n--- seq {t['sequence']} [{t['role']}] {t['timestamp']} ---")
+            lines.append(t["text"])
+        args.save_cleaned.write_text("\n".join(lines), encoding="utf-8")
+        print(f"  saved cleaned to: {args.save_cleaned}")
 
     if args.dry_run:
         print("\n--- first 5 cleaned turns ---")

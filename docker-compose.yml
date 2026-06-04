@@ -17,20 +17,49 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
 
   server:
     build: .
     ports:
-      - "8000:8000"
+      - "8002:8000"
     environment:
       JARVIS_DATABASE_URL: "postgresql+asyncpg://jarvis:jarvis@db:5432/jarvis"
-      JARVIS_OAUTH_ISSUER: "http://localhost:8000"
+      JARVIS_OAUTH_ISSUER: "http://localhost:8002"
       JARVIS_OAUTH_SECRET_KEY: "dev-secret-change-in-production"
+      # P4: where on the host the user's Claude Code project transcripts
+      # live. The /ingest-ledger endpoint scans this directory (read-only)
+      # to answer "안 올라간 본대화 N건". Mounted below at the same path.
+      JARVIS_CLAUDE_PROJECTS_DIR: "/host/claude_projects/F--brain"
+    volumes:
+      # Read-only mount of the user's Claude Code projects folder so the
+      # server can compare local *.jsonl files against ingest_ledger rows.
+      - type: bind
+        source: C:/Users/lhhh0/.claude/projects
+        target: /host/claude_projects
+        read_only: true
     depends_on:
       db:
         condition: service_healthy
     command: >
       sh -c "cd /app && PYTHONPATH=/app/src alembic upgrade head && PYTHONPATH=/app/src uvicorn jarvis.main:app --host 0.0.0.0 --port 8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0) if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status==200 else sys.exit(1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
 
 volumes:
   pgdata:

@@ -21,6 +21,24 @@ READ_LIMIT = 120  # per minute
 WRITE_LIMIT = 30  # per minute
 WINDOW = 60  # seconds
 
+# Explicit write-path allowlist. Old heuristic `"store" in path` missed every
+# new ingest endpoint (`/ingest-and-index`, `/ingest-transcript`, etc.) and let
+# them through at the read limit (120/min) — surface defect T1 from the
+# 2026-05-13 handover.
+_WRITE_PATHS = (
+    "/api/v1/memory/store",
+    "/api/v1/memory/upload-transcript",
+    "/api/v1/memory/ingest-transcript",
+    "/api/v1/memory/ingest-and-index",
+    "/api/v1/memory/classify-turns",
+    "/api/v1/memory/save-summaries",
+    "/api/v1/memory/initialize",
+    "/api/v1/memory/episodes/",  # PATCH index-hints (and any other episode mutators)
+    "/api/v1/workspaces",
+)
+
+_WRITE_METHODS = frozenset({"POST", "PATCH", "PUT", "DELETE"})
+
 
 def _check_rate(key: str, limit: int) -> tuple[bool, int]:
     """Check if request is within rate limit. Returns (allowed, remaining)."""
@@ -46,7 +64,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         client_ip = request.client.host if request.client else "unknown"
 
         # Determine if this is a read or write operation
-        is_write = request.method == "POST" and ("store" in path)
+        is_write = request.method in _WRITE_METHODS and any(path.startswith(p) for p in _WRITE_PATHS)
         limit = WRITE_LIMIT if is_write else READ_LIMIT
         bucket_key = f"{client_ip}:{'write' if is_write else 'read'}"
 

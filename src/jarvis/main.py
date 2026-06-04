@@ -18,16 +18,12 @@ from jarvis.middleware.rate_limit import RateLimitMiddleware
 
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
-    import asyncio
-
-    from jarvis.core.worker import episode_worker
-
+    # Diary-model: ingest/extract/store are all performed by the user's AI
+    # in its own context window (see 2026-05-12-llm-diary-vision.md §3.1).
+    # The previous background episode_worker (Haiku/Sonnet gap extraction)
+    # is retired.
     async with mcp.session_manager.run():
-        worker_task = asyncio.create_task(episode_worker())
         yield
-        worker_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await worker_task
 
 
 # Logging setup

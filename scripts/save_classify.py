@@ -30,7 +30,7 @@ os.environ.setdefault(
     "JARVIS_DATABASE_URL",
     "postgresql+asyncpg://jarvis:jarvis@localhost:5440/jarvis",
 )
-os.environ.setdefault("JARVIS_API_URL", "http://127.0.0.1:8012/api/v1/memory")
+os.environ.setdefault("JARVIS_API_URL", "http://127.0.0.1:8013/api/v1/memory")
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
