@@ -974,7 +974,8 @@ async def api_diaries_by_date(
                 e.id, e.summary, e.diary_entry, e.metadata->>'title' AS title,
                 first_turn.first_ts AS day_ts,
                 first_turn.turn_count,
-                e.human_summary
+                e.human_summary,
+                e.metadata->'keywords' AS keywords
             FROM episodes e
             JOIN first_turn ON first_turn.episode_id = e.id
             WHERE {where_sql}
@@ -993,6 +994,7 @@ async def api_diaries_by_date(
             "day_ts": r[4].isoformat() if r[4] else None,
             "turn_count": int(r[5] or 0),
             "human_summary": r[6],
+            "keywords": r[7] or [],
         })
     return {"items": items, "total": len(items)}
 

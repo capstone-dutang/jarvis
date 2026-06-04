@@ -2351,7 +2351,16 @@ async function renderDiariesByDate(d) {
     turn_count: it.turn_count,
     summary: it.human_summary || it.summary || '',
   }));
-  renderKeywordsAndSummary(dayTurns, summaries);
+  // "다룬 주제" = 그 날 episode들의 키워드 집계 (turn_subjects가 평평한 ws에서도 채워짐).
+  const kwFreq = {};
+  for (const it of items) for (const kw of (it.keywords || [])) {
+    const k = String(kw).trim();
+    if (k) kwFreq[k] = (kwFreq[k] || 0) + 1;
+  }
+  const epKeywords = Object.entries(kwFreq)
+    .sort((a, b) => b[1] - a[1])
+    .map(([name, count]) => ({ name, count }));
+  renderKeywordsAndSummary(dayTurns, summaries, epKeywords);
 }
 
 function renderDiaryCard(it) {
@@ -2531,7 +2540,7 @@ async function fetchSummaries() {
   }
 }
 
-function renderKeywordsAndSummary(turns, summaries) {
+function renderKeywordsAndSummary(turns, summaries, epKeywords) {
   const kwBox = $('keywords');
   const kwCount = $('keywords-count');
   const summBox = $('summaries');
@@ -2540,7 +2549,13 @@ function renderKeywordsAndSummary(turns, summaries) {
   // "다룬 주제" 패널: 본문/범위에서 다룬 sub-subject 이름들. top-level 제외.
   // Fallback when no turns shown (onboarding / empty filter): workspace-wide top sub-subjects.
   let keywords = [];
-  let keywordsMode = 'turns';  // 'turns' (현재 본문 기준) | 'workspace' (전체)
+  let keywordsMode = 'turns';  // 'turns' (본문) | 'workspace' (전체) | 'keywords' (episode 키워드)
+  // Episode-keyword mode: 호출자가 그 범위 episode 키워드를 넘기면 그걸 쓴다.
+  // (캡스톤처럼 모든 turn이 한 subject에 묶인 ws에서도 우측 패널이 채워짐)
+  if (epKeywords && epKeywords.length) {
+    keywords = epKeywords.slice(0, 24).map(k => ({ name: k.name, count: k.count }));
+    keywordsMode = 'keywords';
+  }
   // 실제 데이터 구조: 그 날 다룬 "의미 주제"(타세션 맥락 회상, 다크 시안 UI 등)는
   // top-level(parent_id=null)에 있고, sub-subject는 오히려 episode 자동제목
   // ("JARVIS > 프로젝트 완성 작업 (2026-05-28~29)")이다. 그래서 parent_id 유무로
@@ -2560,7 +2575,7 @@ function renderKeywordsAndSummary(turns, summaries) {
     s = s.replace(/\s*\(\d{4}-\d{2}-\d{2}[^)]*\)\s*$/, '');  // 끝 날짜 괄호 제거
     return s.trim() || String(name || '');
   };
-  if (turns && turns.length > 0) {
+  if (keywords.length === 0 && turns && turns.length > 0) {
     const freq = {};
     for (const t of turns) {
       for (const sid of (t.subjects || [])) {
@@ -2596,9 +2611,11 @@ function renderKeywordsAndSummary(turns, summaries) {
       const hidden = i >= VISIBLE_KW_LIMIT ? ' is-hidden' : '';
       const overflowAttr = i >= VISIBLE_KW_LIMIT ? ' data-overflow="1"' : '';
       const hot = k.count >= HOT_THRESHOLD ? ' hot' : '';
+      const sid = k.subject_id || '';
+      const act = sid ? '클릭으로 위키 페이지' : '클릭으로 검색';
       return `<span class="tag-chip${hot}${hidden}"${overflowAttr}`
-           + ` data-sid="${k.subject_id}"`
-           + ` title="${escapeHtml(k.name)} (${k.count}회) — 클릭으로 위키 페이지">`
+           + ` data-sid="${sid}" data-kw="${escapeHtml(k.name)}"`
+           + ` title="${escapeHtml(k.name)} (${k.count}회) — ${act}">`
            + `<span class="kw-name">#${escapeHtml(label)}</span>`
            + `<span class="kw-count">${k.count}</span>`
            + `</span>`;
@@ -2607,9 +2624,14 @@ function renderKeywordsAndSummary(turns, summaries) {
       ? `<button type="button" class="keywords-more" id="kw-more" data-expanded="0">+ ${overflow}개 더보기</button>`
       : '';
     kwBox.innerHTML = chipsHtml + moreHtml;
-    for (const el of kwBox.querySelectorAll('.tag-chip[data-sid]')) {
+    for (const el of kwBox.querySelectorAll('.tag-chip')) {
       el.style.cursor = 'pointer';
-      el.onclick = () => openEntityPage(el.getAttribute('data-sid'));
+      const sid = el.getAttribute('data-sid');
+      const kw = el.getAttribute('data-kw');
+      el.onclick = () => {
+        if (sid) { openEntityPage(sid); }
+        else if (kw) { const inp = $('search-input'); if (inp) inp.value = kw; runSearch(kw); }
+      };
     }
     const moreBtn = $('kw-more');
     if (moreBtn) {
