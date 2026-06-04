@@ -217,6 +217,7 @@ async def api_search_episodes(
                 cleaned_snippet=h.cleaned_snippet,
                 score=h.score,
                 created_at=h.created_at,
+                day_ts=h.day_ts,
                 matched_field=h.matched_field,
             )
             for h in hits

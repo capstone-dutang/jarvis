@@ -352,6 +352,9 @@ class RawEpisodeHit(BaseModel):
     cleaned_snippet: str | None = None
     score: float
     created_at: datetime
+    # Episode's actual work date (first turn). UI jumps here, not created_at
+    # (which is ingestion time and differs for migrated/diary episodes).
+    day_ts: datetime | None = None
     matched_field: str  # "content" | "summary"
 
 

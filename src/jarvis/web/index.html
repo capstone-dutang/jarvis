@@ -352,6 +352,7 @@ button, input { font-family: inherit; color: inherit; }
 .search-facets .facet-clear:hover { color: var(--text); border-color: var(--accent); }
 .turn-row mark { background: rgba(107,139,214,0.4); color: #e9eefb; padding: 0 2px; border-radius: 2px; }
 .turn-row.search-hit { animation: hit-flash 1.6s ease-out; }
+.diary-card.search-hit { animation: hit-flash 1.6s ease-out; border-color: var(--accent); }
 @keyframes hit-flash { 0% { box-shadow: 0 0 0 3px var(--accent); } 100% { box-shadow: none; } }
 .capsule { flex-shrink: 0; height: 28px; padding: 0 14px; border-radius: 999px; border: 1px solid var(--border-2); background: transparent; color: var(--text-2); font-size: 12.5px; font-weight: 500; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; transition: background 0.15s, border-color 0.15s; }
 .capsule:hover { background: var(--card); color: var(--text); }
@@ -2052,13 +2053,14 @@ function wireBriefCard() {
         loadTopics(), loadDateTree(), loadSubTree(),
         loadDashboard(), loadLedger(), loadOnThisDay(), loadBrief(),
       ]);
-      await refreshBody();
-      return;
+      // ws 전환 후에도 아래 target 점프까지 이어서 수행한다. (early-return 제거 —
+      // 전엔 새 ws 홈에만 떨구고 엔티티/주제 target을 버려서 "제대로 이동 안 됨")
     }
-    // 같은 ws 안 점프
+    // target 점프 (같은 ws · ws 전환 후 공통)
     if      (kind === 'subject'  && tid)  { if (date) state.selectedDate = date; selectTopicFromHome(tid); }
     else if (kind === 'entity'   && tid)  { openEntityPage(tid); }
     else if (kind === 'episode'  && date) { selectDate(date); }
+    else if (date)                        { selectDate(date); }
     else                                  { await refreshBody(); }
   };
 
@@ -2361,6 +2363,21 @@ async function renderDiariesByDate(d) {
     .sort((a, b) => b[1] - a[1])
     .map(([name, count]) => ({ name, count }));
   renderKeywordsAndSummary(dayTurns, summaries, epKeywords);
+
+  // 검색 결과 클릭으로 들어온 경우 해당 episode 카드로 스크롤 + 강조 (일기 카드 뷰용)
+  if (state.searchJumpEpisodeId) {
+    const epId = state.searchJumpEpisodeId;
+    state.searchJumpEpisodeId = null;
+    state.searchJumpTerm = null;
+    requestAnimationFrame(() => {
+      const card = body.querySelector(`.diary-card[data-ep="${epId}"]`);
+      if (card) {
+        card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        card.classList.add('search-hit');
+        setTimeout(() => card.classList.remove('search-hit'), 2600);
+      }
+    });
+  }
 }
 
 function renderDiaryCard(it) {
@@ -2689,7 +2706,7 @@ async function runSearch(query) {
 function filteredSearchResults() {
   const f = state.searchFacets;
   return state.searchResultsRaw.filter(r => {
-    if (f.yearMonth && dateKey(r.created_at).slice(0,7) !== f.yearMonth) return false;
+    if (f.yearMonth && dateKey(r.day_ts || r.created_at).slice(0,7) !== f.yearMonth) return false;
     if (f.matchedField && r.matched_field !== f.matchedField) return false;
     if (f.subjectId) {
       const subs = r.subjects || r.subject_ids || [];
@@ -2712,7 +2729,7 @@ function renderSearchResults() {
   const fieldCounts = {};
   const subjectCounts = {};
   for (const r of raw) {
-    const ym = dateKey(r.created_at).slice(0,7);
+    const ym = dateKey(r.day_ts || r.created_at).slice(0,7);
     ymCounts[ym] = (ymCounts[ym] || 0) + 1;
     fieldCounts[r.matched_field] = (fieldCounts[r.matched_field] || 0) + 1;
     for (const sid of (r.subjects || r.subject_ids || [])) {
@@ -2750,9 +2767,9 @@ function renderSearchResults() {
         const grade = pct >= 75 ? 'High' : pct >= 35 ? 'Mid' : 'Low';
         const field = matchFieldKR[r.matched_field] || r.matched_field;
         return `
-        <div class="search-result" data-eid="${r.episode_id}" data-date="${dateKey(r.created_at)}">
+        <div class="search-result" data-eid="${r.episode_id}" data-date="${dateKey(r.day_ts || r.created_at)}">
           <h4>${escapeHtml(r.summary || '(요약 없음)')}</h4>
-          <div class="meta">${dateKey(r.created_at)} · 관련도 ${pct}% (${grade}) · ${field}</div>
+          <div class="meta">${dateKey(r.day_ts || r.created_at)} · 관련도 ${pct}% (${grade}) · ${field}</div>
           <div class="snippet">${safeMarkdown(r.snippet)}</div>
         </div>`;
       }).join('');

@@ -31,6 +31,10 @@ class RawEpisodeMatch:
     score: float
     created_at: datetime
     matched_field: str  # "content" | "summary"
+    # First-turn timestamp = the episode's actual WORK date. created_at is the
+    # row's ingestion time, which for migrated/diary episodes differs from when
+    # the work happened — UI must jump to day_ts, not created_at.
+    day_ts: datetime | None = None
     # Snippet built off episodes.cleaned_content when that column exists and is
     # populated. NULL otherwise — UI / AI falls back to ``snippet``.
     cleaned_snippet: str | None = None
@@ -77,7 +81,8 @@ async def search_episode_content(
                 SELECT id, summary, content, created_at,
                        pgroonga_score(tableoid, ctid) AS score,
                        'content' AS matched_field,
-                       to_jsonb(ep) ->> 'cleaned_content' AS cleaned_content
+                       to_jsonb(ep) ->> 'cleaned_content' AS cleaned_content,
+                       (SELECT MIN(timestamp) FROM turns t WHERE t.episode_id = ep.id) AS first_ts
                 FROM episodes ep
                 WHERE workspace_id = :ws
                   AND content &@~ :q
@@ -90,7 +95,8 @@ async def search_episode_content(
                 SELECT id, summary, content, created_at,
                        pgroonga_score(tableoid, ctid) AS score,
                        'summary' AS matched_field,
-                       to_jsonb(ep) ->> 'cleaned_content' AS cleaned_content
+                       to_jsonb(ep) ->> 'cleaned_content' AS cleaned_content,
+                       (SELECT MIN(timestamp) FROM turns t WHERE t.episode_id = ep.id) AS first_ts
                 FROM episodes ep
                 WHERE workspace_id = :ws
                   AND summary &@~ :q
@@ -111,6 +117,7 @@ async def search_episode_content(
         score = float(r[4]) if r[4] is not None else 0.0
         matched_field = r[5]
         cleaned_content_full = r[6]
+        first_ts = r[7]
         body_for_snippet = content if matched_field == "content" else summary
         snippet = _make_snippet(body_for_snippet, fts_query)
         # Build cleaned snippet off the same window logic when cleaned body
@@ -129,6 +136,7 @@ async def search_episode_content(
                 score=score,
                 created_at=created_at,
                 matched_field=matched_field,
+                day_ts=first_ts,
             )
 
     return sorted(seen.values(), key=lambda m: -m.score)[:limit]
