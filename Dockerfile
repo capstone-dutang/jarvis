@@ -10,6 +10,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY pyproject.toml .
 RUN pip install --no-cache-dir .
 
+# Pre-download the embedding model (dragonkue/multilingual-e5-small-ko, ONNX)
+# into the image. Without this the model is fetched at runtime on the first
+# recall, so a fresh container would fall back to ILIKE until ~466MB downloads.
+# Baking it makes recall work on the first request — and makes the image
+# portable to a new server with no warm-up. Keep in sync with
+# config.Settings.embedding_model_name.
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('dragonkue/multilingual-e5-small-ko', backend='onnx')"
+
 COPY alembic.ini .
 COPY alembic/ alembic/
 COPY src/ src/
