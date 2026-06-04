@@ -22,6 +22,7 @@ References:
 import uuid
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 from sqlalchemy import select
 
 from jarvis.core.episode_excerpt import get_episode_excerpt as _get_episode_excerpt
@@ -53,6 +54,10 @@ MAX_RESPONSE_CHARS = 100_000
 mcp = FastMCP(
     "JARVIS Memory",
     stateless_http=True,
+    # Railway 등 프록시/커스텀 도메인 환경: MCP SDK(>=1.23)의 DNS rebinding
+    # 방어가 localhost 외 Host 헤더를 421로 막으므로 비활성화한다.
+    # (공개 데모 MCP — OAuth 미사용이라 추가 노출 위험 없음.)
+    transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
     instructions=(
         "JARVIS — the user's AI keeps a diary of their conversations in the cloud.\n"
         "\n"
