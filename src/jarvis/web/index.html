@@ -802,7 +802,7 @@ const state = {
   totalTurns: 0,       // last server-reported total
   hasMore: false,      // last server-reported has_more
   brief: null,         // Today's Brief payload (BriefResponse) — null when fetch fails
-  briefMode: 'cross',  // 'cross' (전체 ws) | 'deep' (현재 ws)
+  briefMode: 'deep',  // 'deep' (현재 ws, 기본) | 'cross' (전체 ws) — 토글로 전환
   wikiViewMode: 'list', // 'list' | 'graph' — Stage 2C wiki tab view toggle
   graphData: null,     // last /graph response (cached per modal open)
 };
